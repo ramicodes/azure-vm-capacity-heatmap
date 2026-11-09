@@ -18,6 +18,19 @@ restricted.
 - **Charts page** — regions ranked by available sizes, family reach across regions, and
   availability-zone coverage, each with a data table.
 
+## Screenshots
+
+> Screenshots use **sample data** (a fictional "Contoso AI Dev" subscription), not a live Azure
+> subscription, so the numbers shown are illustrative only.
+
+### Heatmap — NC-series availability by region
+
+![Heatmap page: regions by NC-series family, with per-size details for the selected region](docs/screenshots/heatmap.png)
+
+### Charts — visual spotting
+
+![Charts page: regions ranked by available sizes, family reach across regions, and availability-zone coverage](docs/screenshots/charts.png)
+
 ## Where the availability values come from
 
 All values are read **live** from the **Azure Resource Manager (ARM) REST API**, using the signed-in

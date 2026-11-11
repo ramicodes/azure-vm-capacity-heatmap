@@ -1,12 +1,11 @@
 import { useEffect, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import { cpuCounts, parseQuota, type QuotaSnapshot } from "./workload-planning";
+import { selectCapacityOffers, type CapacityView } from "./capacity-view";
 import { useAppStore } from "@/lib/store";
-import { AzureResourceManagerService } from "../../generated";
-
-// ARM API versions used for the three live reads.
-const SUBSCRIPTIONS_API = "2022-12-01";
-const LOCATIONS_API = "2022-12-01";
-const SKUS_API = "2021-07-01";
+import { readArmList } from "./arm-client";
+import { useArmReadContext, type ArmReadContext } from "./azure-session";
+import { selectedSubscription } from "./subscription-scope";
 
 export interface SubscriptionOption {
   id: string;
@@ -30,6 +29,7 @@ export interface VmOffer {
   family: string; // standardNCADSA100v4Family
   region: string; // lower-case region name
   vcpus: number | null;
+  quotaVcpus: number | null;
   gpus: number | null;
   memoryGB: number | null;
   zones: string[]; // zones the SKU is offered in
@@ -52,21 +52,14 @@ export interface CapacityData {
 
 // ---------- adapters (narrow the broad ARM types at one boundary) ----------
 
-function listFrom(data: unknown, what: string): unknown[] {
-  if (Array.isArray(data)) return data;
-  if (data && typeof data === "object" && Array.isArray((data as { value?: unknown }).value)) {
-    return (data as { value: unknown[] }).value;
-  }
-  throw new Error(`Unexpected ${what} response shape`);
-}
-
 function str(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
 }
 
 function num(v: unknown): number | null {
+  if (v == null || (typeof v === "string" && !v.trim())) return null;
   const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : NaN;
-  return Number.isFinite(n) ? n : null;
+  return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
 function strArray(v: unknown): string[] {
@@ -85,27 +78,22 @@ function sizeTemplate(size: string): string {
 
 // ---------- live reads ----------
 
-async function fetchSubscriptions(): Promise<SubscriptionOption[]> {
-  const result = await AzureResourceManagerService.Subscriptions_List(SUBSCRIPTIONS_API);
-  if (!result.success) throw result.error;
-  return listFrom(result.data, "subscriptions")
+async function fetchSubscriptions(context: ArmReadContext, signal: AbortSignal): Promise<SubscriptionOption[]> {
+  const data = await readArmList({ kind: "subscriptions" }, context, signal);
+  return data
     .map((raw) => {
       const s = raw as Record<string, unknown>;
-      const id = str(s.subscriptionId) ?? "";
+      const id = str(s.subscriptionId)?.toLowerCase() ?? "";
       return { id, name: str(s.displayName) ?? id, state: str(s.state) ?? "Unknown" };
     })
     .filter((s) => s.id)
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function fetchRegions(subscriptionId: string): Promise<Map<string, RegionInfo>> {
-  const result = await AzureResourceManagerService.Subscriptions_ListLocations(
-    subscriptionId,
-    LOCATIONS_API,
-  );
-  if (!result.success) throw result.error;
+async function fetchRegions(subscriptionId: string, context: ArmReadContext, signal: AbortSignal): Promise<Map<string, RegionInfo>> {
+  const data = await readArmList({ kind: "regions", subscriptionId }, context, signal);
   const map = new Map<string, RegionInfo>();
-  for (const raw of listFrom(result.data, "locations")) {
+  for (const raw of data) {
     const l = raw as Record<string, unknown>;
     const name = str(l.name)?.toLowerCase();
     if (!name) continue;
@@ -119,19 +107,13 @@ async function fetchRegions(subscriptionId: string): Promise<Map<string, RegionI
   return map;
 }
 
-async function fetchCapacity(subscriptionId: string): Promise<CapacityData> {
-  const result = await AzureResourceManagerService.Provider_Resources_GetById(
-    subscriptionId,
-    "Microsoft.Compute",
-    "skus",
-    SKUS_API,
-  );
-  if (!result.success) throw result.error;
+async function fetchCapacity(subscriptionId: string, context: ArmReadContext, signal: AbortSignal): Promise<CapacityData> {
+  const data = await readArmList({ kind: "skus", subscriptionId }, context, signal);
 
   const offers: VmOffer[] = [];
   const familySizes = new Map<string, { series: string; templates: Map<string, number> }>();
 
-  for (const raw of listFrom(result.data, "resource SKUs")) {
+  for (const raw of data) {
     const s = raw as Record<string, unknown>;
     if (str(s.resourceType) !== "virtualMachines") continue;
     const sku = str(s.name);
@@ -178,7 +160,7 @@ async function fetchCapacity(subscriptionId: string): Promise<CapacityData> {
     for (const li of infos) {
       const region = str(li.location)?.toLowerCase();
       if (!region) continue;
-      const zones = strArray(li.zones).sort();
+      const zones = [...new Set(strArray(li.zones))].sort();
       const zoneBlock = restrictedZones.get(region);
       const regionReason = restrictedRegions.get(region);
       const availableZones = regionReason
@@ -196,7 +178,7 @@ async function fetchCapacity(subscriptionId: string): Promise<CapacityData> {
         series,
         family,
         region,
-        vcpus: num(caps.get("vCPUs")),
+        ...cpuCounts(caps, size),
         gpus: num(caps.get("GPUs")),
         memoryGB: num(caps.get("MemoryGB")),
         zones,
@@ -223,25 +205,31 @@ async function fetchCapacity(subscriptionId: string): Promise<CapacityData> {
 
 // ---------- hooks ----------
 
-export function useSubscriptions() {
-  return useQuery({ queryKey: ["arm", "subscriptions"], queryFn: fetchSubscriptions, staleTime: 10 * 60_000 });
-}
-
-export function useRegions(subscriptionId: string | undefined) {
+export function useSubscriptions(context: ArmReadContext) {
   return useQuery({
-    queryKey: ["arm", "regions", subscriptionId],
-    queryFn: () => fetchRegions(subscriptionId!),
-    enabled: !!subscriptionId,
-    staleTime: 60 * 60_000,
+    queryKey: ["arm", context.cacheKey, "subscriptions"],
+    queryFn: ({ signal }) => fetchSubscriptions(context, signal),
+    enabled: context.enabled, staleTime: 10 * 60_000, retry: false,
   });
 }
 
-export function useCapacity(subscriptionId: string | undefined) {
+export function useRegions(subscriptionId: string | undefined, context: ArmReadContext) {
   return useQuery({
-    queryKey: ["arm", "skus", subscriptionId],
-    queryFn: () => fetchCapacity(subscriptionId!),
-    enabled: !!subscriptionId,
+    queryKey: ["arm", context.cacheKey, "regions", subscriptionId],
+    queryFn: ({ signal }) => fetchRegions(subscriptionId!, context, signal),
+    enabled: context.enabled && !!subscriptionId,
+    staleTime: 60 * 60_000,
+    retry: false,
+  });
+}
+
+export function useCapacity(subscriptionId: string | undefined, context: ArmReadContext) {
+  return useQuery({
+    queryKey: ["arm", context.cacheKey, "skus", subscriptionId],
+    queryFn: ({ signal }) => fetchCapacity(subscriptionId!, context, signal),
+    enabled: context.enabled && !!subscriptionId,
     staleTime: 5 * 60_000,
+    retry: false,
   });
 }
 
@@ -253,21 +241,29 @@ export interface SeriesStat {
   gpu: boolean;
 }
 
-export function useCapacityScope() {
-  const subId = useAppStore((s) => s.subscriptionId);
+export function useCapacityScope(view: CapacityView) {
+  const context = useArmReadContext();
+  const regionSearch = useAppStore((s) => s.regionSearch);
+  const setRegionSearch = useAppStore((s) => s.setRegionSearch);
+  const availabilityRegionSearch = useAppStore((s) => s.availabilityRegionSearch);
+  const setAvailabilityRegionSearch = useAppStore((s) => s.setAvailabilityRegionSearch);
+  const workload = useAppStore((s) => s.workload);
+  const setWorkload = useAppStore((s) => s.setWorkload);
+  const comparisonRegions = useAppStore((s) => s.comparisonRegions);
+  const setComparisonRegions = useAppStore((s) => s.setComparisonRegions);
+  const storedSubId = useAppStore((s) => s.subscriptionId);
   const series = useAppStore((s) => s.series);
   const setSubId = useAppStore((s) => s.setSubscriptionId);
   const setSeries = useAppStore((s) => s.setSeries);
 
-  const subs = useSubscriptions();
-  const regions = useRegions(subId);
-  const capacity = useCapacity(subId);
+  const subs = useSubscriptions(context);
+  const subId = selectedSubscription(context.subscriptionScope, storedSubId, subs.data);
+  const regions = useRegions(subId, context);
+  const capacity = useCapacity(subId, context);
 
   useEffect(() => {
-    if (!subId && subs.data?.length) {
-      setSubId((subs.data.find((s) => s.state === "Enabled") ?? subs.data[0]).id);
-    }
-  }, [subs.data, subId, setSubId]);
+    if (subId && subId !== storedSubId) setSubId(subId);
+  }, [subId, storedSubId, setSubId]);
 
   const seriesStats = useMemo<SeriesStat[]>(() => {
     const m = new Map<string, { families: Set<string>; gpu: boolean }>();
@@ -288,27 +284,57 @@ export function useCapacityScope() {
     }
   }, [seriesStats, series, setSeries]);
 
-  const seriesOffers = useMemo(
-    () => (capacity.data?.offers ?? []).filter((o) => o.series === series),
-    [capacity.data, series],
+  const selected = useMemo(
+    () => selectCapacityOffers(capacity.data?.offers ?? [], series, regions.data, view,
+      { availabilityRegionSearch, regionSearch, workload }),
+    [capacity.data, series, regions.data, view, availabilityRegionSearch, regionSearch, workload],
   );
+  const activeComparisonRegions = view === "workload" ? comparisonRegions : [];
+  const quotaQueries = useQueries({
+    queries: activeComparisonRegions.map((region) => ({
+      queryKey: ["arm", context.cacheKey, "quota", subId, region],
+      queryFn: async ({ signal }: { signal: AbortSignal }) => {
+        const data = await readArmList({ kind: "quota", subscriptionId: subId!, region }, context, signal);
+        return parseQuota({ value: data });
+      },
+      enabled: context.enabled && !!subId,
+      staleTime: 5 * 60_000,
+      retry: false,
+      retryOnMount: false,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    })),
+  });
+  const quotas = new Map<string, QuotaSnapshot>(activeComparisonRegions.map((region, i) => {
+    const query = quotaQueries[i];
+    return [region, {
+      state: query.isError ? "error" : query.isFetching || query.isPending ? "loading" : "ready",
+      data: query.isError || query.isFetching ? undefined : query.data,
+    }];
+  }));
 
   return {
+    view, workload, setWorkload, comparisonRegions, setComparisonRegions, ...selected, quotas, quotaQueries,
+    setRegionSearch: view === "availability" ? setAvailabilityRegionSearch : setRegionSearch,
     subs,
     regions,
     capacity,
     subId,
+    subscriptionLocked: context.subscriptionScope !== null,
     setSubId,
     series,
     setSeries,
     seriesStats,
-    seriesOffers,
     error: subs.error ?? regions.error ?? capacity.error,
     loading: subs.isPending || (!!subId && capacity.isPending),
     refetchAll: () => {
+      if (!context.enabled) return;
       void subs.refetch();
-      void regions.refetch();
-      void capacity.refetch();
+      if (subId) {
+        void regions.refetch();
+        void capacity.refetch();
+      }
+      quotaQueries.forEach((q) => { void q.refetch(); });
     },
   };
 }

@@ -3,6 +3,8 @@ import { motion } from "motion/react";
 import { Toaster } from "@/components/ui/sonner";
 import { routes } from "@/routes";
 import { cn } from "@/lib/utils";
+import { BrowserUtils } from "@azure/msal-browser";
+import { AzureAccess, AzurePopupCallback } from "@/components/azure-access";
 
 function CapacityMark() {
   // 3x3 heat grid mark — app identity
@@ -22,19 +24,20 @@ function CapacityMark() {
 
 export function AppShell() {
   const { pathname } = useLocation();
+  if (BrowserUtils.isInPopup()) return <AzurePopupCallback />;
   return (
     <div className="flex min-h-screen flex-col">
       <a
-        href="#heatmap"
+        href="#main-content"
         className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:ring-2 focus:ring-ring"
       >
         Skip to content
       </a>
       <header className="sticky top-0 z-30 border-b border-border bg-background/95 backdrop-blur">
-        <div className="flex h-12 items-center gap-2.5 px-4 sm:px-6">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 py-2 sm:h-12 sm:flex-nowrap sm:px-6 sm:py-0">
           <CapacityMark />
           <span className="text-sm font-semibold tracking-tight">Azure VM Capacity Heatmap</span>
-          <nav aria-label="Pages" className="ml-4 flex h-full items-stretch gap-1">
+          <nav aria-label="Pages" className="flex h-10 w-full items-stretch gap-1 sm:ml-4 sm:h-full sm:w-auto">
             {routes
               .filter((r) => r.label)
               .map((r) => {
@@ -61,7 +64,7 @@ export function AppShell() {
           </nav>
         </div>
       </header>
-      <main className="flex flex-1 flex-col">
+      <main id="main-content" tabIndex={-1} className="flex flex-1 flex-col">
         <motion.div
           key={pathname}
           initial={{ opacity: 0, y: 6 }}
@@ -69,7 +72,7 @@ export function AppShell() {
           transition={{ duration: 0.15, ease: "easeOut" }}
           className="flex-1"
         >
-          <Outlet />
+          <AzureAccess><Outlet /></AzureAccess>
         </motion.div>
       </main>
       <Toaster />

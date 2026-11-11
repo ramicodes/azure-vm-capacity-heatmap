@@ -10,6 +10,8 @@ import { routes } from "@/routes";
 import { AppViewSignal } from "@/lib/app-view-signal";
 import { isPreviewMount } from "@/lib/app-view-serializer";
 import { AppShortcutProvider } from "@/components/shortcut-provider";
+import { azureEnvironment } from "@/lib/azure-session";
+import { getRouterBasename } from "@/lib/router-basename";
 
 // Derive the router basename. The app is served under two kinds of mount:
 //
@@ -28,22 +30,11 @@ import { AppShortcutProvider } from "@/components/shortcut-provider";
 //
 // Rule: trust ``BASE_URL`` ONLY when the runtime pathname actually starts
 // with it. Anything else (an unusable build base, empty, malformed) falls
-// through to runtime derivation. This avoids ad-hoc substring blacklists ever
-// drifting out of date against Vite normalization changes.
-function getRouterBasename(): string {
-  const buildBase = import.meta.env.BASE_URL.replace(/\/$/, "");
-  if (
-    buildBase &&
-    buildBase.startsWith("/") &&
-    (window.location.pathname === buildBase ||
-      window.location.pathname.startsWith(buildBase + "/"))
-  ) {
-    return buildBase;
-  }
-  const parts = window.location.pathname.split("/").filter(Boolean);
-  return parts.length ? `/${parts[0]}/` : "/";
-}
-const ROUTER_BASENAME = getRouterBasename();
+// through to runtime derivation for managed apps. Standalone/MSAL and CLI
+// routes instead stay rooted at the origin, including direct route reloads.
+const ROUTER_BASENAME = getRouterBasename(
+  import.meta.env.BASE_URL, window.location.pathname, azureEnvironment.mode,
+);
 
 // Route PATTERNS for the app-view signal (never pathnames). Computed once so
 // the signal effect does not re-run on every App render.

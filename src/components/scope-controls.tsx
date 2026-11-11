@@ -1,5 +1,6 @@
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Select,
@@ -16,14 +17,21 @@ export function ScopeControls({ scope, onChange }: { scope: CapacityScope; onCha
   const { subs, subId, setSubId, series, setSeries, seriesStats } = scope;
   return (
     <>
+      <div className="flex flex-col gap-1">
+        <label htmlFor="region-q" className="text-xs font-medium text-muted-foreground">
+          {scope.view === "availability" ? "Availability region filter" : "Workload region filter"}
+        </label>
+        <Input id="region-q" className="w-48" value={scope.regionSearch}
+          onChange={(e) => { scope.setRegionSearch(e.target.value); onChange?.(); }} placeholder="e.g. UAE, Europe" />
+      </div>
       <div className="flex min-w-56 flex-col gap-1">
         <label htmlFor="sub" className="text-xs font-medium text-muted-foreground">
-          Subscription
+          {scope.subscriptionLocked ? "Subscription (configured)" : "Subscription"}
         </label>
         <Select
           value={subId}
           onValueChange={(v) => { setSubId(v); onChange?.(); }}
-          disabled={!subs.data?.length}
+          disabled={scope.subscriptionLocked || !subs.data?.length}
         >
           <SelectTrigger id="sub" className="w-64">
             <SelectValue placeholder={subs.isPending ? "Loading…" : "Select subscription"} />

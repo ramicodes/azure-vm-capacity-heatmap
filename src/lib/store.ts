@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { DEFAULT_WORKLOAD, type Workload } from "./workload-planning.ts";
 
 // Global client state shared across components/routes. ONE module-scoped store,
 // no Provider needed — import `useAppStore` anywhere. Use `useState` for
@@ -32,9 +33,26 @@ import { create } from "zustand";
 //   const addItem = useAppStore((s) => s.addItem);  // action (stable reference)
 
 interface AppState {
-  // Filters shared by the heatmap and charts pages
+  // Shared subscription/series; each view owns its region search.
   subscriptionId: string | undefined;
   series: string;
+  workload: Workload;
+  comparisonRegions: string[];
+  regionSearch: string;
+  availabilityRegionSearch: string;
+  azureIdentity: string | null;
+  azureSubscriptionScope: string | null;
+  azureSessionGeneration: number;
+  azureAuthIssue: string | null;
+  azureAuthBusy: boolean;
+  setAzureIdentity: (identity: string | null) => void;
+  setAzureSubscriptionScope: (scope: string | null) => void;
+  setAzureAuthIssue: (issue: string | null) => void;
+  setAzureAuthBusy: (busy: boolean) => void;
+  setRegionSearch: (text: string) => void;
+  setAvailabilityRegionSearch: (text: string) => void;
+  setWorkload: (workload: Workload) => void;
+  setComparisonRegions: (regions: string[]) => void;
   setSubscriptionId: (id: string) => void;
   setSeries: (series: string) => void;
 }
@@ -42,6 +60,29 @@ interface AppState {
 export const useAppStore = create<AppState>((set) => ({
   subscriptionId: undefined,
   series: "NC",
-  setSubscriptionId: (subscriptionId) => set({ subscriptionId }),
+  workload: DEFAULT_WORKLOAD,
+  comparisonRegions: [],
+  regionSearch: "",
+  availabilityRegionSearch: "",
+  azureIdentity: null,
+  azureSubscriptionScope: null,
+  azureSessionGeneration: 0,
+  azureAuthIssue: null,
+  azureAuthBusy: false,
+  setAzureIdentity: (azureIdentity) => set((s) => ({
+    azureIdentity, azureSessionGeneration: s.azureSessionGeneration + 1,
+    azureAuthIssue: null, subscriptionId: undefined, comparisonRegions: [], availabilityRegionSearch: "",
+  })),
+  setAzureSubscriptionScope: (azureSubscriptionScope) => set((s) => ({
+    azureSubscriptionScope, azureIdentity: null, azureSessionGeneration: s.azureSessionGeneration + 1,
+    azureAuthIssue: null, subscriptionId: undefined, comparisonRegions: [], regionSearch: "", availabilityRegionSearch: "",
+  })),
+  setAzureAuthIssue: (azureAuthIssue) => set({ azureAuthIssue }),
+  setAzureAuthBusy: (azureAuthBusy) => set({ azureAuthBusy }),
+  setRegionSearch: (regionSearch) => set({ regionSearch }),
+  setAvailabilityRegionSearch: (availabilityRegionSearch) => set({ availabilityRegionSearch }),
+  setWorkload: (workload) => set({ workload }),
+  setComparisonRegions: (comparisonRegions) => set({ comparisonRegions: [...new Set(comparisonRegions)].slice(0, 3) }),
+  setSubscriptionId: (subscriptionId) => set({ subscriptionId, comparisonRegions: [] }),
   setSeries: (series) => set({ series }),
 }));

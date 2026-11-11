@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { Cpu, Lock, Search, ServerOff } from "lucide-react";
+import { Cpu, Lock, ServerOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { OfferSummaryChart } from "@/components/offer-summary-chart";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { ConnectorErrorState, EmptyState } from "@/components/states";
@@ -99,10 +99,10 @@ function buildRows(offers: VmOffer[], regions: Map<string, RegionInfo> | undefin
 type Selection = { region: string; family: string | null } | null;
 
 export function HomePage() {
-  const scope = useCapacityScope();
+  const scope = useCapacityScope("availability");
   const { regions, capacity, subs, series, seriesOffers } = scope;
   const [view, setView] = useState<"ranked" | "geo">("ranked");
-  const [query, setQuery] = useState("");
+  const query = scope.regionSearch;
   const [selection, setSelection] = useState<Selection>(null);
 
   const allRows = useMemo(() => buildRows(seriesOffers, regions.data), [seriesOffers, regions.data]);
@@ -118,52 +118,33 @@ export function HomePage() {
   }, [allRows, seriesOffers, capacity.data, series]);
 
   const rows = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const filtered = q
-      ? allRows.filter(
-          (r) =>
-            r.region.displayName.toLowerCase().includes(q) ||
-            r.region.name.includes(q) ||
-            r.region.geography.toLowerCase().includes(q),
-        )
-      : allRows;
     const rank = (a: RegionRow, b: RegionRow) =>
       b.availableSizes - a.availableSizes ||
       b.maxZones - a.maxZones ||
       a.region.displayName.localeCompare(b.region.displayName);
     return view === "ranked"
-      ? [...filtered].sort(rank)
-      : [...filtered].sort(
+      ? [...allRows].sort(rank)
+      : [...allRows].sort(
           (a, b) => a.region.geography.localeCompare(b.region.geography) || rank(a, b),
         );
-  }, [allRows, query, view]);
+  }, [allRows, view]);
 
   const regionsWithAvailability = allRows.filter((r) => r.availableSizes > 0).length;
-  const active: Selection = selection ?? (rows[0] ? { region: rows[0].region.name, family: null } : null);
+  const active: Selection = selection && rows.some((r) => r.region.name === selection.region)
+    ? { region: selection.region, family: seriesOffers.some((o) => o.region === selection.region && o.family === selection.family) ? selection.family : null }
+    : (rows[0] ? { region: rows[0].region.name, family: null } : null);
 
   const { error, loading } = scope;
 
   return (
     <div className="flex h-full flex-col">
+      <div className="space-y-1 px-4 pt-4 sm:px-6">
+        <h1 className="text-lg font-semibold tracking-tight">VM availability</h1>
+        <p className="text-sm text-muted-foreground">Explore offered sizes and subscription restrictions. Workload requirements and quota checks live in Workload fit and do not filter this view.</p>
+      </div>
       {/* toolbar */}
       <div className="flex flex-wrap items-end gap-x-4 gap-y-3 border-b border-border px-4 py-3 sm:px-6">
         <ScopeControls scope={scope} onChange={() => setSelection(null)} />
-
-        <div className="flex flex-col gap-1">
-          <label htmlFor="region-q" className="text-xs font-medium text-muted-foreground">
-            Region
-          </label>
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-            <Input
-              id="region-q"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="e.g. UAE, Europe"
-              className="w-48 pl-8"
-            />
-          </div>
-        </div>
 
         <div className="flex flex-col gap-1">
           <span id="order-label" className="text-xs font-medium text-muted-foreground">
@@ -181,7 +162,6 @@ export function HomePage() {
             <ToggleGroupItem value="geo" className="h-9 px-3 text-xs">By geography</ToggleGroupItem>
           </ToggleGroup>
         </div>
-
         <RefreshControl scope={scope} />
       </div>
 
@@ -200,6 +180,8 @@ export function HomePage() {
       ) : loading ? (
         <HeatmapSkeleton />
       ) : (
+        <>
+        <div className="min-w-0 px-4 pt-4 sm:px-6"><OfferSummaryChart scope={scope} /></div>
         <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
           <section
             id="heatmap"
@@ -209,9 +191,9 @@ export function HomePage() {
           >
             <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
               <div>
-                <h1 id="heatmap-title" className="text-lg font-semibold tracking-tight">
+                <h2 id="heatmap-title" className="text-lg font-semibold tracking-tight">
                   {series}-series availability by region
-                </h1>
+                </h2>
                 <p id="heatmap-summary" className="text-sm text-muted-foreground">
                   {families.length} {families.length === 1 ? "family" : "families"} · offered in {allRows.length} regions ·
                   sizes available to this subscription in {regionsWithAvailability}
@@ -247,6 +229,7 @@ export function HomePage() {
             />
           )}
         </div>
+        </>
       )}
     </div>
   );
@@ -496,6 +479,7 @@ function DetailPane({
             Show all {series}-series sizes in this region
           </Button>
         )}
+        <p className="mt-2 text-xs text-muted-foreground">vCPU shows active cores. Subscription eligibility does not establish quota sufficiency or guarantee allocation; use Workload fit for requirements and quota checks.</p>
       </div>
       <div className="min-h-0 flex-1 overflow-auto lg:max-h-[calc(100vh-9.5rem)]">
         <table className="w-full text-sm">
@@ -560,7 +544,7 @@ function DetailPane({
 
 function HeatmapSkeleton() {
   return (
-    <div role="status" aria-label="Loading capacity data" className="flex flex-col gap-3 px-4 py-4 sm:px-6">
+    <div role="status" aria-label="Loading VM availability" className="flex flex-col gap-3 px-4 py-4 sm:px-6">
       <Skeleton className="h-6 w-72" />
       <Skeleton className="h-4 w-96" />
       <div className="mt-2 flex flex-col gap-1">

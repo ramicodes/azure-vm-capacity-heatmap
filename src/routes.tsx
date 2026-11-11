@@ -19,6 +19,6 @@ export interface AppRoute {
 // map over `routes` (e.g. filter to entries with a `label`) so the router and
 // the nav can never drift out of sync. `not-found` is wired in App.tsx.
 export const routes: AppRoute[] = [
-  { path: "/", element: <HomePage />, label: "Heatmap", icon: Grid3x3 },
-  { path: "/charts", element: <ChartsPage />, label: "Charts", icon: BarChart3 },
+  { path: "/", element: <HomePage />, label: "VM availability", icon: Grid3x3 },
+  { path: "/charts", element: <ChartsPage />, label: "Workload fit", icon: BarChart3 },
 ];

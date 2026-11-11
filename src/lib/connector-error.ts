@@ -4,6 +4,7 @@
 // other failure stays generic. The upstream message is never echoed: a policy
 // block's body carries tenant and environment ids.
 import { CONNECTOR_POLICY_STATUS } from "./connector-policy-monitor";
+import { ArmReadError } from "./arm-http";
 
 const CONNECTOR_POLICY_MARKER =
   "data loss prevention (dlp) or advanced connector policies";
@@ -26,6 +27,7 @@ export function isConnectorPolicyBlock(error: unknown, depth = 0): boolean {
 }
 
 export function connectorErrorMessage(error: unknown, connector: string): string {
+  if (error instanceof ArmReadError) return error.message;
   if (isConnectorPolicyBlock(error)) {
     return `${connector} is blocked by your organization's data policy for this environment. Ask an administrator to allow the ${connector} connector, then reload the app.`;
   }

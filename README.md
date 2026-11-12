@@ -1,4 +1,4 @@
-# Azure VM Capacity Heatmap
+# Azure VM Capacity Planner
 
 > [!WARNING]
 > **This is not a production app.** It is a prototype / proof of concept built for exploration and

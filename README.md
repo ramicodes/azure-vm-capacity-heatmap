@@ -248,6 +248,10 @@ The three identities have separate purposes:
 | Dedicated authentication user-assigned identity | Federated credential on the existing Entra application; no Azure RBAC assignment |
 | GitHub deployment user-assigned identity | Website Contributor on this App Service only; federated to this repository's `main` branch |
 
+GitHub's OIDC subject includes the repository owner and repository's stable numeric IDs. The
+infrastructure template defaults to this repository; deployments from another repository must
+provide its matching owner ID and repository ID as well as its `owner/name`.
+
 Viewers receive the **backend identity's shared read access**, not their own subscription permissions.
 Only explicitly allowed Entra user object IDs in the configured tenant can use the app. Easy Auth
 must remain enabled: the Node server trusts its platform-injected principal header, not a header

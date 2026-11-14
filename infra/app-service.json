@@ -8,6 +8,8 @@
     "clientId": { "type": "string" },
     "allowedUserIds": { "type": "array", "minLength": 1 },
     "repository": { "type": "string" },
+    "repositoryOwnerId": { "type": "string", "defaultValue": "30652006" },
+    "repositoryId": { "type": "string", "defaultValue": "1451710596" },
     "branch": { "type": "string", "defaultValue": "main" }
   },
   "variables": {
@@ -35,7 +37,7 @@
       "dependsOn": ["[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployName'))]"],
       "properties": {
         "issuer": "https://token.actions.githubusercontent.com",
-        "subject": "[concat('repo:', parameters('repository'), ':ref:refs/heads/', parameters('branch'))]",
+        "subject": "[concat('repo:', split(parameters('repository'), '/')[0], '@', parameters('repositoryOwnerId'), '/', split(parameters('repository'), '/')[1], '@', parameters('repositoryId'), ':ref:refs/heads/', parameters('branch'))]",
         "audiences": ["api://AzureADTokenExchange"]
       }
     },

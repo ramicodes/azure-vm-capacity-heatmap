@@ -7,6 +7,8 @@ param(
   [Parameter(Mandatory)][guid]$ClientId,
   [Parameter(Mandatory)][guid[]]$AllowedUserIds,
   [string]$Repository = "ramicodes/azure-vm-capacity-planner",
+  [ValidatePattern('^\d+$')][string]$RepositoryOwnerId = "30652006",
+  [ValidatePattern('^\d+$')][string]$RepositoryId = "1451710596",
   [string]$Branch = "main",
   [string]$Location = "eastus2",
   [switch]$ValidateOnly
@@ -29,7 +31,8 @@ try {
     appName = @{ value = $AppName }; location = @{ value = $Location }
     tenantId = @{ value = "$TenantId" }; clientId = @{ value = "$ClientId" }
     allowedUserIds = @{ value = @($AllowedUserIds | ForEach-Object { "$_" }) }
-    repository = @{ value = $Repository }; branch = @{ value = $Branch }
+    repository = @{ value = $Repository }; repositoryOwnerId = @{ value = $RepositoryOwnerId }
+    repositoryId = @{ value = $RepositoryId }; branch = @{ value = $Branch }
   }
   $parameterPath = Join-Path $temp "parameters.json"
   $parameters | ConvertTo-Json -Depth 12 | Set-Content -Path $parameterPath -Encoding utf8

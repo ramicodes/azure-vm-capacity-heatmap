@@ -6,7 +6,7 @@ param(
   [Parameter(Mandatory)][guid]$TenantId,
   [Parameter(Mandatory)][guid]$ClientId,
   [Parameter(Mandatory)][guid[]]$AllowedUserIds,
-  [string]$Repository = "ramicodes/azure-vm-capacity-heatmap",
+  [string]$Repository = "ramicodes/azure-vm-capacity-planner",
   [string]$Branch = "main",
   [string]$Location = "eastus2",
   [switch]$ValidateOnly

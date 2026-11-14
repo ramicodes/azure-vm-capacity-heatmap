@@ -1,5 +1,5 @@
-import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { motion } from "motion/react";
+import { NavLink, Outlet } from "react-router-dom";
+import { ShieldCheck } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { routes } from "@/routes";
 import { cn } from "@/lib/utils";
@@ -7,11 +7,10 @@ import { BrowserUtils } from "@azure/msal-browser";
 import { AzureAccess, AzurePopupCallback } from "@/components/azure-access";
 
 function CapacityMark() {
-  // 3x3 heat grid mark — app identity
   const shades = [
-    "fill-emerald-200", "fill-emerald-400", "fill-emerald-700",
-    "fill-emerald-400", "fill-emerald-700", "fill-emerald-900",
-    "fill-emerald-100", "fill-emerald-400", "fill-emerald-700",
+    "fill-white/40", "fill-white/70", "fill-white",
+    "fill-white/70", "fill-white", "fill-white/90",
+    "fill-white/30", "fill-white/70", "fill-white",
   ];
   return (
     <svg viewBox="0 0 22 22" className="size-6" aria-hidden="true">
@@ -23,21 +22,30 @@ function CapacityMark() {
 }
 
 export function AppShell() {
-  const { pathname } = useLocation();
   if (BrowserUtils.isInPopup()) return <AzurePopupCallback />;
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="planner-app flex min-h-screen flex-col">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:ring-2 focus:ring-ring"
       >
         Skip to content
       </a>
-      <header className="sticky top-0 z-30 border-b border-border bg-background/95 backdrop-blur">
-        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 py-2 sm:h-12 sm:flex-nowrap sm:px-6 sm:py-0">
-          <CapacityMark />
-          <span className="text-sm font-semibold tracking-tight">Azure VM Capacity Heatmap</span>
-          <nav aria-label="Pages" className="flex h-10 w-full items-stretch gap-1 sm:ml-4 sm:h-full sm:w-auto">
+      <header className="planner-header sticky top-0 z-40">
+        <div className="flex min-h-16 items-center justify-between gap-4 px-4 sm:px-6">
+          <div className="flex min-w-0 items-center gap-3">
+            <CapacityMark />
+            <span className="text-sm font-semibold leading-5 sm:text-base">Azure VM Capacity Planner</span>
+          </div>
+          <span className="hidden shrink-0 items-center gap-2 text-sm sm:inline-flex">
+            <ShieldCheck className="size-4" aria-hidden="true" />
+            Read-only planning
+          </span>
+        </div>
+      </header>
+      <div className="mx-auto grid w-full max-w-[1920px] flex-1 lg:grid-cols-[216px_minmax(0,1fr)]">
+        <aside className="planner-navigation min-w-0 border-b border-border lg:sticky lg:top-16 lg:self-start lg:border-0 lg:px-3 lg:py-6">
+          <nav aria-label="Pages" className="flex min-w-0 gap-1 overflow-x-auto px-3 py-2 lg:flex-col lg:overflow-visible lg:p-0">
             {routes
               .filter((r) => r.label)
               .map((r) => {
@@ -49,10 +57,10 @@ export function AppShell() {
                     end={r.path === "/"}
                     className={({ isActive }) =>
                       cn(
-                        "flex items-center gap-1.5 border-b-2 px-2.5 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-ring",
+                        "planner-nav-link relative flex shrink-0 items-center gap-2.5 rounded-md px-3 py-3 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
                         isActive
-                          ? "border-primary font-medium text-foreground"
-                          : "border-transparent text-muted-foreground hover:text-foreground",
+                          ? "bg-accent font-semibold text-primary"
+                          : "text-muted-foreground hover:bg-muted hover:text-foreground",
                       )
                     }
                   >
@@ -62,19 +70,14 @@ export function AppShell() {
                 );
               })}
           </nav>
-        </div>
-      </header>
-      <main id="main-content" tabIndex={-1} className="flex flex-1 flex-col">
-        <motion.div
-          key={pathname}
-          initial={{ opacity: 0, y: 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.15, ease: "easeOut" }}
-          className="flex-1"
-        >
+          <p className="mx-3 mt-8 hidden border-t border-border pt-4 text-xs leading-5 text-muted-foreground lg:block">
+            Compare eligibility, workload fit and quota. Published availability does not guarantee allocation.
+          </p>
+        </aside>
+        <main id="main-content" tabIndex={-1} className="planner-main m-0 min-w-0 outline-none lg:my-6 lg:mr-6">
           <AzureAccess><Outlet /></AzureAccess>
-        </motion.div>
-      </main>
+        </main>
+      </div>
       <Toaster />
     </div>
   );

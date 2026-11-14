@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -15,14 +15,21 @@ export function OfferSummaryChart({ scope }: { scope: CapacityScope }) {
   const workload = scope.view === "workload";
   const [topN, setTopN] = useState<"10" | "all">("10");
   const [open, setOpen] = useState(false);
-  const rows = useMemo(() => summarizeRegionOffers(scope.regionOffers, scope.seriesOffers, scope.regions.data),
-    [scope.regionOffers, scope.seriesOffers, scope.regions.data]);
-  const shown = topN === "all" ? rows : rows.slice(0, 10);
+  const input = useMemo(() => ({
+    regionOffers: scope.regionOffers, seriesOffers: scope.seriesOffers, regions: scope.regions.data,
+  }), [scope.regionOffers, scope.seriesOffers, scope.regions.data]);
+  const deferredInput = useDeferredValue(input);
+  const deferredTopN = useDeferredValue(topN);
+  const generating = input !== deferredInput || topN !== deferredTopN;
+  const busy = scope.refreshing || generating;
+  const rows = useMemo(() => summarizeRegionOffers(deferredInput.regionOffers, deferredInput.seriesOffers, deferredInput.regions),
+    [deferredInput]);
+  const shown = deferredTopN === "all" ? rows : rows.slice(0, 10);
   const title = workload ? "Requirement matches and exclusions by region" : "Subscription eligibility by region";
   const config: ChartConfig = {
-    eligible: { label: workload ? "Matching eligible sizes" : "Eligible sizes", color: "#047857" },
-    restricted: { label: workload ? "Matching restricted sizes" : "Restricted sizes", color: "#f59e0b" },
-    ...(workload ? { excluded: { label: "Excluded by requirements", color: "#64748b" } } : {}),
+    eligible: { label: workload ? "Matching eligible sizes" : "Eligible sizes", color: "var(--chart-1)" },
+    restricted: { label: workload ? "Matching restricted sizes" : "Restricted sizes", color: "var(--chart-4)" },
+    ...(workload ? { excluded: { label: "Excluded by requirements", color: "var(--muted-foreground)" } } : {}),
   };
   if (!rows.length) return <EmptyState title="No offerings in this region scope" description="Change this tab's region search or the selected VM series." />;
   return (
@@ -46,16 +53,22 @@ export function OfferSummaryChart({ scope }: { scope: CapacityScope }) {
         </div>
       </CardHeader>
       <CardContent className="min-w-0 space-y-2 px-4">
-        <ChartContainer config={config} className="aspect-auto w-full" style={{ height: shown.length * 28 + 70 }} aria-hidden="true">
+        <p role="status" aria-live="polite" aria-atomic="true" className="flex min-h-8 items-center gap-2 text-xs text-muted-foreground">
+          {busy && <LoaderCircle className="size-4 animate-spin text-primary motion-reduce:animate-none" aria-hidden="true" />}
+          {generating ? "Generating chart from the applied filters..."
+            : scope.refreshing ? "Refreshing Azure data. The previous chart stays visible until it is updated."
+              : `${shown.length} of ${rows.length} regions displayed`}
+        </p>
+        <ChartContainer config={config} className="aspect-auto w-full" style={{ height: shown.length * 28 + 70 }} aria-hidden="true" aria-busy={busy}>
           <BarChart data={shown} layout="vertical" margin={{ left: 0, right: 12 }} accessibilityLayer={false}>
             <CartesianGrid horizontal={false} />
             <XAxis type="number" allowDecimals={false} tickLine={false} axisLine={false} />
             <YAxis type="category" dataKey="name" width={115} tickLine={false} axisLine={false} interval={0} />
             <ChartTooltip cursor={{ fillOpacity: 0.4 }} content={<ChartTooltipContent />} />
             <ChartLegend content={<ChartLegendContent />} />
-            <Bar dataKey="eligible" stackId="offer" fill="var(--color-eligible)" />
-            <Bar dataKey="restricted" stackId="offer" fill="var(--color-restricted)" />
-            {workload && <Bar dataKey="excluded" stackId="offer" fill="var(--color-excluded)" />}
+            <Bar dataKey="eligible" stackId="offer" fill="var(--color-eligible)" isAnimationActive={false} />
+            <Bar dataKey="restricted" stackId="offer" fill="var(--color-restricted)" isAnimationActive={false} />
+            {workload && <Bar dataKey="excluded" stackId="offer" fill="var(--color-excluded)" isAnimationActive={false} />}
           </BarChart>
         </ChartContainer>
         <Collapsible open={open} onOpenChange={setOpen}>

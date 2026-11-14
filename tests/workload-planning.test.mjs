@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  DEFAULT_WORKLOAD, assessQuota, cpuCounts, csvCell, fitReasons, parseQuota,
-  planningCsv, workloadValue,
+  DEFAULT_WORKLOAD, MAX_QUOTA_COVERAGE_REGIONS, QUOTA_SCAN_CONCURRENCY, assessQuota, cpuCounts,
+  csvCell, deploymentReadiness, fitReasons, parseQuota, planningCsv, runBoundedQuotaScan, workloadValue,
 } from "../src/lib/workload-planning.ts";
 
 const offer = {
@@ -81,6 +81,82 @@ test("missing and unsupported quota stays unknown, not zero or unlimited", () =>
   assert.equal(invalid.usages[0].used, null);
   assert.equal(invalid.usages[0].limit, null);
   assert.equal(assessQuota(offer, 1, { state: "ready", data: invalid }).regionalHeadroom, null);
+});
+
+test("deployment readiness distinguishes matches, subscription restrictions, quota and unchecked regions", () => {
+  const restricted = { ...offer, key: "Standard_E16s_v5|westus", region: "westus", status: "restricted" };
+  const noMatch = { ...offer, key: "Standard_E16s_v5|centralus", region: "centralus" };
+  const rows = deploymentReadiness(
+    [offer, restricted, noMatch],
+    [offer, restricted],
+    1,
+    new Map([["eastus", ready()]]),
+  );
+  assert.deepEqual(rows.map(({ region, readiness, matchingSkuCount, eligibleSkuCount }) => ({
+    region, readiness, matchingSkuCount, eligibleSkuCount,
+  })), [
+    { region: "eastus", readiness: "ready", matchingSkuCount: 1, eligibleSkuCount: 1 },
+    { region: "westus", readiness: "blocked", matchingSkuCount: 1, eligibleSkuCount: 0 },
+    { region: "centralus", readiness: "blocked", matchingSkuCount: 0, eligibleSkuCount: 0 },
+  ]);
+});
+
+test("deployment readiness blocks confirmed shortfalls but keeps missing quota unknown", () => {
+  const insufficient = deploymentReadiness([offer], [offer], 2, new Map([["eastus", ready(63, 100)]]))[0];
+  assert.equal(insufficient.readiness, "blocked");
+  assert.match(insufficient.reason, /No eligible matching SKU/);
+
+  const missingFamily = { state: "ready", data: parseQuota({ value: [
+    { name: { value: "cores" }, unit: "Count", currentValue: 0, limit: 100 },
+  ] }) };
+  const unknown = deploymentReadiness([offer], [offer], 1, new Map([["eastus", missingFamily]]))[0];
+  assert.equal(unknown.readiness, "unknown");
+  assert.match(unknown.reason, /incomplete/);
+
+  assert.equal(deploymentReadiness([offer], [offer], 1, new Map())[0].readiness, "not-checked");
+  assert.equal(deploymentReadiness([offer], [offer], 1, new Map([["eastus", { state: "error" }]]))[0].readiness, "unknown");
+});
+
+test("quota coverage stays bounded and records per-region failures", async () => {
+  const quota = ready().data;
+  assert.ok(quota);
+  const regions = Array.from({ length: 8 }, (_, i) => `region-${i}`);
+  const completed = new Map();
+  let active = 0;
+  let peak = 0;
+  await runBoundedQuotaScan(regions, async (region) => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    active--;
+    if (region === "region-7") throw new Error("quota unavailable");
+    return quota;
+  }, (region, result) => completed.set(region, result), new AbortController().signal);
+  assert.equal(peak, QUOTA_SCAN_CONCURRENCY);
+  assert.equal(completed.size, regions.length);
+  assert.equal(completed.get("region-0").state, "ready");
+  assert.equal(completed.get("region-7").state, "error");
+  await assert.rejects(() => runBoundedQuotaScan(
+    Array.from({ length: MAX_QUOTA_COVERAGE_REGIONS + 1 }, (_, i) => `r${i}`),
+    async () => quota,
+    () => {},
+    new AbortController().signal,
+  ), /limited to/);
+});
+
+test("cancelling quota coverage stops queued regions", async () => {
+  const controller = new AbortController();
+  const started = [];
+  const results = [];
+  await runBoundedQuotaScan(Array.from({ length: 8 }, (_, i) => `region-${i}`), async (region, signal) => {
+    started.push(region);
+    if (started.length === 2) controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    if (signal.aborted) throw new Error("aborted");
+    return ready().data;
+  }, (region, result) => results.push([region, result]), controller.signal);
+  assert.equal(started.length, 2);
+  assert.deepEqual(results, []);
 });
 
 test("quota parser rejects unexpected or incomplete pages and ignores non-count metrics", () => {

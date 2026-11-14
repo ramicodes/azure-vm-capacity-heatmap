@@ -22,39 +22,68 @@ restricted.
   unknown capabilities do not pass an active minimum. Its chart separates matching eligible sizes,
   matching subscription-restricted sizes and offerings excluded by requirements, with an accessible
   table. Defaults preserve all offerings, but this tab never changes the VM availability view.
-- **Region comparison & quota (Workload fit only)** — explicitly select up to three regions for side-by-side matching
+- **Quota coverage & deployment readiness (Workload fit only)** — explicitly scan up to 50 regions in the
+  current series, region-search and applied-workload scope, with at most three concurrent read-only quota requests. A
+  region is ready when at least one matching, subscription-eligible SKU has sufficient regional and
+  family vCPU headroom for the requested VM count; blocked, unknown and unchecked states remain distinct.
+- **Region comparison (Workload fit only)** — explicitly select up to three regions for side-by-side matching
   SKUs, subscription restrictions, zone coverage, and regional/family vCPU usage, limits and headroom.
-  Quota is fetched only for selected regions, never scanned across all regions.
 - **CSV download (Workload fit only)** — exports all results matching the applied subscription, series, region search
   and workload filters (not only the chart's top-N rows or a selected heatmap cell). Includes restrictions,
   zones, additional VM count, quota status and available fetch timestamps.
+- **Cost estimates (`/cost`)** — compares matching, subscription-eligible sizes in a selected region using public
+  Azure pay-as-you-go hourly retail rates. Choose Linux or Windows and runtime hours; the view calculates
+  monthly per-VM and requested-count estimates in USD. Spot, reservations, negotiated discounts, storage,
+  networking, tax and additional software licensing are excluded.
+- **Deployment shortlist (`/shortlist`)** — compare up to three exact SKU/region alternatives across series,
+  inspect capabilities and restrictions, explicitly check regional/family vCPU quota, and export a shortlist CSV.
+  Shortfall guidance distinguishes additional vCPUs from the required total quota limit and links to Azure's
+  quota workflow; it submits no requests. Each candidate uses the current workload count independently.
+  Selection is memory-only and clears on subscription/account changes or reload. The old `/scenarios`
+  URL redirects here; existing saved presets are left untouched in browser storage, not migrated or deleted.
+
+## Interface and loading
+
+The interface follows Microsoft Fluent 2 design principles: Segoe UI/system typography,
+Microsoft blue, neutral layered surfaces, consistent controls, visible keyboard focus,
+and desktop side navigation that becomes a horizontal navigation bar on smaller screens.
+The existing Radix/shadcn controls remain the accessible interaction primitives; no new
+UI runtime dependency is required.
+
+Availability and workload charts display labelled, chart-shaped loading placeholders on
+initial reads. During refresh, existing charts stay visible with a spinner, a live status
+announcement and a busy state. Filter-driven chart calculations use React deferred rendering
+so controls can respond before the next chart is ready. Refresh stays disabled until all
+scope reads finish; failures remain explicit errors rather than stale-success results.
+Retail-price refresh also retains prior estimates while the request is in flight.
+Reduced-motion preferences disable decorative animation.
 
 ## Screenshots
 
-> Screenshots use **sample data** (a fictional "Contoso AI Dev" subscription), not a live Azure
-> subscription, so the numbers shown are illustrative only. These historical images predate the
-> distinct VM availability / Workload fit views; the descriptions above document current behavior.
+These current Fluent 2 captures use isolated, fictional illustrative data, not a live Azure
+subscription. Availability and workload results in the images are examples only.
 
-### VM availability — NC-series availability by region
+### VM availability
 
-![Earlier availability matrix: regions by NC-series family, with per-size details for the selected region](docs/screenshots/heatmap.png)
+![Current VM availability view with regional eligibility results and the family matrix](docs/screenshots/heatmap.png)
 
-### Workload fit — visual comparison
+### Workload fit
 
-![Earlier charts presentation, before workload-specific matching and exclusion analysis](docs/screenshots/charts.png)
+![Current workload-fit view with requirements and matching versus restricted regional results](docs/screenshots/charts.png)
 
 ## Where the availability values come from
 
 Dashboard values come from the **Azure Resource Manager (ARM) REST API**, using the signed-in
-user's own Azure permissions; there is no sample-data fallback. These read-only endpoints are used:
+user's own Azure permissions in managed, standalone and CLI modes, or the backend's managed identity
+in App Service hosted mode. There is no sample-data fallback. These read-only endpoints are used:
 
 | Data | ARM API | API version |
 |------|---------|-------------|
 | Subscriptions the user can see | `GET /subscriptions` | `2022-12-01` |
-| Configured local CLI subscription (instead of listing all) | `GET /subscriptions/{id}` | `2022-12-01` |
+| Configured local CLI or hosted subscription (instead of listing all) | `GET /subscriptions/{id}` | `2022-12-01` |
 | Region names and geography | `GET /subscriptions/{id}/locations` | `2022-12-01` |
 | VM sizes per region, zones and restrictions | `GET /subscriptions/{id}/providers/Microsoft.Compute/skus` ([Resource SKUs – List](https://learn.microsoft.com/rest/api/compute/resource-skus/list)) | `2021-07-01` |
-| Regional compute usage and quota, on explicit region selection | `GET /subscriptions/{id}/providers/Microsoft.Compute/locations/{region}/usages` ([Usage – List](https://learn.microsoft.com/rest/api/compute/usage/list?view=rest-compute-2025-04-01)) | `2025-04-01` |
+| Regional compute usage and quota, on explicit region selection or coverage scan | `GET /subscriptions/{id}/providers/Microsoft.Compute/locations/{region}/usages` ([Usage – List](https://learn.microsoft.com/rest/api/compute/usage/list?view=rest-compute-2025-04-01)) | `2025-04-01` |
 
 How the app derives "availability" from the Resource SKUs response (only `resourceType = virtualMachines`):
 
@@ -74,8 +103,9 @@ search and ordering. Its matrix, eligibility chart and offer/restriction drilldo
 count, capability minima, zone minima, comparison selections and the Workload fit region search.
 It has no requirements form, quota comparison or CSV action.
 
-Workload fit alone owns requirements, matching/exclusion analysis, selected-region quota comparison
-and filtered CSV. Its matching results, chart's match counts and CSV share the same applied filters.
+Workload fit alone owns requirements, matching/exclusion analysis, selected-region quota comparison,
+quota coverage and the deployment-readiness report, and filtered CSV. Its matching results, chart's
+match counts, coverage scope and CSV share the same applied filters.
 The chart also counts offerings excluded by requirements within this tab's region search, rather
 than hiding those exclusions. Count changes quota demand, not per-VM capability matching.
 Each tab's region search matches the region identifier, display name or geography. Searches and
@@ -84,6 +114,26 @@ are shared. Restrictions are not
 silently filtered out: capability/zone fit, subscription eligibility and quota sufficiency are
 independent. Comparison includes exclusion reasons for sizes rejected by the current filters.
 GPU count is a count only, not a match for GPU model, architecture or performance.
+
+Cost estimates use the public, unauthenticated Azure Retail Prices API. They match exact VM SKU and region
+to current hourly consumption meters, excluding Spot and Low Priority meters, and show Microsoft retail
+prices in USD. Windows selects a published Windows meter when available. Monthly values are
+`hourly retail rate × runtime hours × requested VM count`; runtime defaults to 730 hours and is limited
+to 1–744 hours. The estimate is compute-only and does not include negotiated terms, reservations,
+storage, networking, taxes, or additional software licensing. Validate prices against the applicable
+agreement and Azure pricing tools before using them for a commitment.
+The API does not enable browser CORS, so local development routes requests through Vite's same-origin
+`/api/retail-prices` proxy. The included Azure Static Web Apps function in `api/retail-prices`
+provides the production route, with exact SKU/region query validation, a fixed upstream,
+a 20-second timeout, bounded responses, and short-lived caching of public prices only.
+The browser must not call the Retail Prices endpoint directly.
+
+Legacy saved scenarios remain in browser `localStorage` but are no longer exposed in navigation.
+The deployment shortlist stores only candidate keys in memory and resolves them against the current
+subscription's catalog. Quota reads are explicit, bounded to three candidate regions, and cached for
+five minutes. Changing the selected region set requires a new check. Failed reads stay unknown and
+can be retried. Export includes current catalog/quota timestamps; neither export nor sufficient quota
+guarantees allocation. Workload fit places matching results before collapsible region/quota tools.
 
 The VM count defaults to 1 and accepts integers from 1 to 10,000. Capability minima default to 0;
 vCPU/GPU minima are whole numbers, RAM accepts fractional GiB, and available-zone minimum is 0–3.
@@ -109,7 +159,7 @@ establish physical equivalence across subscriptions or regions. No deployment is
 
 The existing managed ARM connector's `Provider_Resources_GetById` reads
 `Microsoft.Compute` / `locations/{region}/usages`; generated connector output is unchanged.
-The signed-in user needs `Microsoft.Compute/locations/usages/read` at the subscription (for example
+The ARM identity needs `Microsoft.Compute/locations/usages/read` at the subscription (for example
 through Reader), as well as read access for the existing subscription, location and SKU discovery.
 The app does not grant permissions or request quota increases.
 Policy, permission, API and connector failures are shown explicitly; raw connector errors are not
@@ -119,15 +169,24 @@ over-limit page fails the entire read, never returning partial results. The gene
 connector does not expose a generic next-link operation; paginated managed responses are therefore
 explicitly rejected rather than displayed as complete subscription, SKU or quota results.
 
-Quota cache identity includes **mode + account/session + subscription + region** in standalone/CLI modes
-(subscription + region in managed mode). At most three selected-region queries
-are observed at once, only while Workload fit is open. VM availability does not fetch or refresh
-quota, even if comparison selections are retained. Results are fresh for five minutes; selecting/revisiting a stale region
-refetches, but window focus/reconnect do not trigger quota requests. **Refresh quota** retries one
-region; Workload fit's main **Refresh** also re-reads currently selected regions. Errors are not automatically
-retried. Switching subscription clears comparison selections. SKU data is fresh for five minutes,
-subscriptions for ten minutes and region metadata for one hour. All dashboard result caches and filters stay in browser
-memory only and disappear on reload; results are not an atomic snapshot and can change after fetch.
+Quota cache identity includes **mode + account/session + subscription + region** in standalone/CLI/hosted modes
+(subscription + region in managed mode). Quota data stays fresh for five minutes and remains cached for
+up to one hour while unused. The explicit coverage scan is limited to 50 eligible regions
+in the current series and region-search scope, with at most three quota reads in flight. It reads only
+regions with at least one matching, subscription-eligible SKU; non-matching or fully restricted regions
+are assessed without quota requests. VM availability does not fetch or refresh quota, even if comparison
+selections are retained. Selected-region views and coverage scans reuse fresh cache entries, and window
+focus/reconnect do not trigger quota requests. **Refresh quota** retries one
+comparison region; **Refresh quota coverage** explicitly re-reads the coverage scope. Workload fit's main
+**Refresh** re-reads currently selected comparison regions, not the coverage scan. Errors are not automatically
+retried. Switching subscription clears comparison selections. SKU and subscription data stay fresh for
+15 minutes; region metadata stays fresh for one hour. Inactive dashboard query results are retained in
+memory for up to one hour, and public price results for 24 hours. Refresh controls explicitly fetch
+current data. All dashboard result caches and filters stay in browser memory only and disappear on reload;
+results are not an atomic snapshot and can change after fetch.
+An optional local CLI disk cache and the hosted backend's shared in-memory read cache are exceptions
+to browser-only result caching; see below. Hosted viewers share the explicitly configured backend
+identity's access, not their individual Azure RBAC permissions.
 Standalone sign-in, account changes and sign-out cancel/remove ARM queries and reset the selected
 subscription and comparison regions. Each successful sign-in gets a new cache generation, including
 signing into the same account again, so a previous session's results are not reused.
@@ -146,11 +205,11 @@ Treat exported subscription metadata as internal information and share appropria
 - VM availability's eligibility count does **not** establish quota sufficiency. Use Workload fit's on-demand
   comparison quota checks; an eligible size can still exceed regional or family quota.
 - Results are **per subscription**; another subscription (or offer type) can see different restrictions.
-- SKU and quota data are cached in browser memory for about 5 minutes; use **Refresh** to re-read.
+- SKU data is fresh for 15 minutes and quota data for 5 minutes; use **Refresh** to re-read.
 
 ## How it runs
 
-The app supports three explicit read paths, sharing the same parsers, filters, quota assessment,
+The app supports four explicit read paths, sharing the same parsers, filters, quota assessment,
 query caching and CSV logic:
 
 - **Managed** — the Power Platform **Azure Resource Manager connector** (`shared_arm`) via the
@@ -160,14 +219,106 @@ query caching and CSV logic:
   GET requests. This is the default on `localhost`, `127.0.0.1` and `[::1]`. It never silently
   falls back to the managed connector or sample data. Missing configuration shows setup instructions;
   no ARM reads run before sign-in.
+- **Hosted App Service** — explicit `VITE_ARM_MODE=hosted`. App Service authenticates users using
+  tenant-pinned Entra OIDC, with an explicit user object-ID allowlist enforced by both Easy Auth and
+  the backend. A same-origin Node backend uses its system-assigned managed identity for read-only ARM
+  calls against one configured subscription. No ARM tokens or client secrets reach the browser.
 - **Local CLI** — opt-in `VITE_ARM_MODE=cli` in the development preview only. A separate Node
   loopback bridge uses the official Azure CLI's existing authorized context to issue ARM GET reads.
   Tokens never reach the browser. No MSAL registration is needed for this path.
 
-`VITE_ARM_MODE=managed`, `standalone` or `cli` explicitly overrides the origin default. An invalid mode
+`VITE_ARM_MODE=managed`, `standalone`, `cli` or `hosted` explicitly overrides the origin default. An invalid mode
 fails closed. Client-facing `VITE_` variables are embedded at Vite startup/build time; restart after changing
 them. The server-only CLI scope variable is read independently at bridge startup. When packaging for Power Apps from a checkout with standalone `.env.local`, explicitly build
 with `VITE_ARM_MODE=managed` or remove the standalone override.
+
+### App Service hosting and continuous deployment
+
+This deployment uses a **paid Linux B1 plan with Always On**, hosting both the frontend and a
+dependency-free Node 22 backend. It does not replace or delete an existing Static Web App.
+Check the selected region's App Service quota before provisioning; a B1 limit of zero requires
+an approved increase to at least one instance through [Azure Quotas](https://aka.ms/azure-quota).
+The selected subscription must be in the same tenant as the authentication app registration.
+
+The three identities have separate purposes:
+
+| Identity | Access |
+|----------|--------|
+| App Service system-assigned identity | Reader on the one configured Azure subscription |
+| Dedicated authentication user-assigned identity | Federated credential on the existing Entra application; no Azure RBAC assignment |
+| GitHub deployment user-assigned identity | Website Contributor on this App Service only; federated to this repository's `main` branch |
+
+Viewers receive the **backend identity's shared read access**, not their own subscription permissions.
+Only explicitly allowed Entra user object IDs in the configured tenant can use the app. Easy Auth
+must remain enabled: the Node server trusts its platform-injected principal header, not a header
+supplied by an untrusted reverse proxy. The health endpoint exposes only `{"status":"ok"}` anonymously;
+the frontend and all data endpoints require authentication. Do not expose the Node port directly.
+
+Easy Auth requests only OIDC sign-in scopes, not delegated ARM consent. Its application credential
+is a managed-identity federated assertion, not a secret. The script adds a Web callback while
+preserving existing SPA redirect URIs, enables ID-token issuance for Easy Auth's `code id_token`
+hybrid flow, and adds one federation. It preserves the existing implicit access-token issuance
+setting (new deployments do not need it enabled) and does not change configured API
+permissions, existing credentials, tenant consent policies or grant consent. **Tenant policy can
+still require administrator approval for user sign-in**; managed identity does not bypass it.
+If sign-in fails at the callback with Entra error `700054`, verify that **ID tokens** is enabled
+under the app registration's **Authentication > Implicit grant and hybrid flows**; Easy Auth's
+hybrid request needs this even though its authorization code is redeemed server-side.
+Provisioning requires resource/RBAC administration and ownership of the existing app registration.
+
+From PowerShell 7, substitute your reviewed target and the allowed user's **object ID in that tenant**:
+
+```powershell
+.\scripts\provision-app-service.ps1 `
+  -SubscriptionId "<subscription-guid>" -ResourceGroup "<existing-resource-group>" `
+  -AppName "<unique-app-name>" -Location "eastus2" `
+  -TenantId "<tenant-guid>" -ClientId "<existing-application-client-guid>" `
+  -AllowedUserIds "<tenant-user-object-guid>" -ValidateOnly
+
+# After successful validation, repeat without -ValidateOnly to create paid resources.
+.\scripts\deploy-app-service.ps1 `
+  -SubscriptionId "<subscription-guid>" -ResourceGroup "<existing-resource-group>" `
+  -AppName "<unique-app-name>"
+```
+
+The provisioning output includes the actual URL and deployment identity's public client ID.
+Provisioning is incremental and can be re-run with the same reviewed inputs; it deliberately does not
+silently replace a conflicting authentication federation. A partially failed deployment requires
+inspection before retrying or cleanup. Manual deployment uses the caller's Azure CLI authentication,
+builds with `VITE_ARM_MODE=hosted` and `VITE_BASE=/`, and packages only the production frontend,
+backend and required shared modules. No `.env` files, CLI credentials, development dependencies or
+`node_modules` are deployed. Packaging always rebuilds in hosted mode and requires an empty output
+directory outside the repository, so it cannot reuse a stale CLI or standalone build.
+Health and anonymous-access checks are not proof of interactive sign-in
+or successful managed-identity ARM access; verify those separately after RBAC propagation.
+
+For automated updates, a repository administrator must publish `.github/workflows/deploy-app-service.yml`
+and set these **repository variables** (none are secrets):
+
+```powershell
+gh variable set AZURE_DEPLOY_CLIENT_ID --repo "<owner/repository>" --body "<DeployClientId from provisioning>"
+gh variable set AZURE_TENANT_ID --repo "<owner/repository>" --body "<tenant-guid>"
+gh variable set AZURE_SUBSCRIPTION_ID --repo "<owner/repository>" --body "<subscription-guid>"
+gh variable set AZURE_WEBAPP_NAME --repo "<owner/repository>" --body "<app-name>"
+gh variable set AZURE_RESOURCE_GROUP --repo "<owner/repository>" --body "<resource-group>"
+```
+
+Pushes to `main` and manual workflow dispatches run regression tests, build and package the app,
+then use GitHub OIDC for deployment. Only the deployment job receives `id-token: write`.
+No publish profile, deployment password or client secret is needed; FTP and SCM basic authentication
+are disabled. A successful pipeline checks backend health and anonymous API denial. It does not
+automate user consent. Changing the repository or deployment branch requires updating both the
+Azure federation and workflow. Treat writers to the deployment branch as trusted deployers.
+
+Hosted reads are pinned to four fixed ARM endpoint shapes, with same-endpoint pagination,
+100-page/100,000-item/200-MiB cumulative response bounds and a 180-second read deadline.
+At most three distinct ARM reads and three retail-price reads run concurrently; excess requests
+receive an explicit retryable error. Concurrent identical ARM reads coalesce. The process caches up
+to 64 projected results: catalogs for 15 minutes, quota for five minutes and subscription/region
+metadata for an hour. First reads may reuse that cache across authorized sessions; successful
+browser-session rereads explicitly bypass it. Caches are memory-only and expire on app restart.
+Subscription responses use `private, no-store`; tokens and raw ARM envelopes never reach clients.
+Failed or oversized reads return errors, not partial results or stale-success fallbacks.
 
 ### Local Azure CLI development
 
@@ -223,16 +374,35 @@ tokens and provider error bodies are never returned or logged.
 
 Each local session pins the CLI user, tenant and default subscription. Tokens are obtained in
 that explicit context server-side; dashboard subscription selection changes only the read path,
-never CLI defaults. Sessions expire after 30 minutes and are invalidated on restart. Context is
-checked before each page and after every completed read, plus browser status checks every 15 seconds
-and on focus/reconnect. A detected account/tenant/default-subscription change, logout, failed context
-check or unavailable bridge clears the browser's ARM data and requires reconnecting. Changes made in
-another terminal are not instantaneously observable between checks. Successful metadata checks do
+never CLI defaults. Sessions expire after 30 minutes of inactivity and are invalidated on restart;
+successful status checks and reads renew that idle window. Context is checked before and after each
+complete read, plus browser status checks about once a minute and when a stale page regains focus.
+Each page of a paginated ARM response is still validated, without launching another CLI context
+process per page. A detected account/tenant/default-subscription change, logout or rejected ARM
+authorization clears browser data and requires reconnecting. Temporary CLI or bridge failures remain
+visible and retryable without discarding the local session. Changes made in another terminal are not
+instantaneously observable between checks. Successful metadata checks do
 not prove current ARM access or that a cached quota/SKU snapshot is still current; use Refresh for
 new ARM reads. CLI token refresh happens only through its official existing credential cache.
 
-Local session handles and dashboard data remain in browser memory. The bridge keeps only bounded
-in-memory session metadata and request-lifetime tokens; it does not persist credentials or results.
+Local session handles and browser dashboard data remain in memory. The bridge keeps only bounded
+in-memory session metadata and request-lifetime tokens; it never persists credentials.
+Set the server-only `ARM_SKU_CACHE=true` in `.env.local` and restart the bridge to opt into
+a compressed local VM catalog cache. It stores only the projected VM metadata needed by the planner,
+not tokens, session handles, account names, subscription lists, quota or prices. Each snapshot is
+isolated by the CLI user, tenant, default context and requested subscription, remains usable for
+15 minutes from its original fetch, and preserves that timestamp in the UI with a **Local cache** label.
+At most four snapshots are retained in `%LOCALAPPDATA%\AzureVmCapacityPlanner\Cache` on Windows
+(`~/.cache/AzureVmCapacityPlanner/Cache` elsewhere).
+The CLI context is revalidated before using any snapshot; cached data does not prove current
+ARM permissions or live availability. A first catalog read after reconnect/reload or bridge restart
+can reuse the snapshot. Later catalog reads in that session, including **Refresh**, fetch Azure again.
+Browser freshness uses the snapshot's original age, not its time of retrieval.
+A cold or expired catalog still needs a complete Azure download, which can be large and slow.
+Expired snapshots are discarded on read and old snapshots are pruned on write; there is no background
+cleanup while the bridge is stopped. Disconnect clears browser results, not this opt-in cache.
+Set `ARM_SKU_CACHE=false` to stop using it; delete the named cache files to remove stored metadata.
+Cache failures are explicit, not disguised as a live result.
 The installed CLI itself owns its pre-existing credential storage. CLI subprocesses have a 30-second
 timeout and 1 MiB output bound; complete reads have a two-minute deadline, including queue time.
 At most four operations run concurrently, with up to eight additional requests queued to accommodate
@@ -248,6 +418,31 @@ compromised same-origin code. Stop the bridge when finished. Power Apps packagin
 `VITE_ARM_MODE=managed`; the CLI server is not a deployment backend.
 
 ### Standalone Azure sign-in prerequisites
+
+Hosted prototype: **https://calm-cliff-0eb082d0f.5.azurestaticapps.net/**.
+It uses the configured single-tenant Microsoft Entra registration; visitors need an account permitted
+by that registration and their own Azure read permissions. The hosted app does not use the developer's CLI session.
+
+For hosted deployment, provision an Azure Static Web App (the Free plan supports this prototype)
+and add its exact HTTPS root URL to the existing registration's **SPA** redirect URIs.
+Preserve any existing redirect URIs. Review the prerequisites below before granting consent.
+Then run from PowerShell with the chosen resource and public application identifiers:
+
+```powershell
+.\scripts\deploy-static-web-app.ps1 -SubscriptionId <subscription-id> -ResourceGroup <resource-group> -Name <static-app-name> -ClientId <client-id> -TenantId <tenant-id>
+```
+
+The script deploys the current working tree, including uncommitted changes. It creates no Azure
+resources, changes no registration/permissions, and never uploads `.env.local` or the CLI bridge.
+It builds with standalone sign-in and a root asset base, deploys `dist` plus the managed pricing
+function using the pinned official SWA CLI, and restores process environment variables afterward.
+Deployment credentials stay in process environment only; do not print or save them.
+The local preview remains in CLI mode. The site assets are public; Azure data remains behind
+each user's sign-in and Azure RBAC. Scenarios stay local to each browser and origin.
+Static Web Apps routing supports direct links to `/charts`, `/cost`, and `/shortlist`.
+The former `/scenarios` URL redirects to `/shortlist`.
+Verify the hosted pages, pricing endpoint, and an interactive Azure sign-in after deployment.
+The Free plan has platform quotas and no production SLA; do not upgrade or enable billable extras implicitly.
 
 Copy [`.env.example`](.env.example) to gitignored `.env.local`, then fill in the existing registration's
 public client and tenant IDs. The preview here uses **`http://127.0.0.1:5173/`**; keep that exact origin

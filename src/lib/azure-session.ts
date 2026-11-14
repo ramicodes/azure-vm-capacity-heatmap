@@ -45,12 +45,12 @@ export function useArmReadContext() {
   const generation = useAppStore((s) => s.azureSessionGeneration);
   const cliScope = useAppStore((s) => s.azureSubscriptionScope);
   const managed = azureEnvironment.mode === "managed";
-  const subscriptionScope = azureEnvironment.mode === "cli" ? cliScope : null;
+  const subscriptionScope = azureEnvironment.mode === "cli" || azureEnvironment.mode === "hosted" ? cliScope : null;
   return {
     mode: azureEnvironment.mode,
     identity,
     subscriptionScope,
-    enabled: managed || ((azureEnvironment.mode === "cli" || azureEnvironment.config !== null) && identity !== null),
+    enabled: managed || ((azureEnvironment.mode === "cli" || azureEnvironment.mode === "hosted" || azureEnvironment.config !== null) && identity !== null),
     cacheKey: armCacheKey(azureEnvironment, identity, generation, subscriptionScope),
   };
 }

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { DEFAULT_WORKLOAD, type Workload } from "./workload-planning.ts";
+import type { ScenarioSettings } from "./saved-scenarios.ts";
 
 // Global client state shared across components/routes. ONE module-scoped store,
 // no Provider needed — import `useAppStore` anywhere. Use `useState` for
@@ -38,6 +39,8 @@ interface AppState {
   series: string;
   workload: Workload;
   comparisonRegions: string[];
+  shortlistKeys: string[];
+  setShortlistKeys: (keys: string[]) => void;
   regionSearch: string;
   availabilityRegionSearch: string;
   azureIdentity: string | null;
@@ -55,6 +58,7 @@ interface AppState {
   setComparisonRegions: (regions: string[]) => void;
   setSubscriptionId: (id: string) => void;
   setSeries: (series: string) => void;
+  applyScenario: (settings: ScenarioSettings) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -62,6 +66,8 @@ export const useAppStore = create<AppState>((set) => ({
   series: "NC",
   workload: DEFAULT_WORKLOAD,
   comparisonRegions: [],
+  shortlistKeys: [],
+  setShortlistKeys: (keys) => set({ shortlistKeys: [...new Set(keys)].slice(0, 3) }),
   regionSearch: "",
   availabilityRegionSearch: "",
   azureIdentity: null,
@@ -71,11 +77,11 @@ export const useAppStore = create<AppState>((set) => ({
   azureAuthBusy: false,
   setAzureIdentity: (azureIdentity) => set((s) => ({
     azureIdentity, azureSessionGeneration: s.azureSessionGeneration + 1,
-    azureAuthIssue: null, subscriptionId: undefined, comparisonRegions: [], availabilityRegionSearch: "",
+    azureAuthIssue: null, subscriptionId: undefined, comparisonRegions: [], shortlistKeys: [], availabilityRegionSearch: "",
   })),
   setAzureSubscriptionScope: (azureSubscriptionScope) => set((s) => ({
     azureSubscriptionScope, azureIdentity: null, azureSessionGeneration: s.azureSessionGeneration + 1,
-    azureAuthIssue: null, subscriptionId: undefined, comparisonRegions: [], regionSearch: "", availabilityRegionSearch: "",
+    azureAuthIssue: null, subscriptionId: undefined, comparisonRegions: [], shortlistKeys: [], regionSearch: "", availabilityRegionSearch: "",
   })),
   setAzureAuthIssue: (azureAuthIssue) => set({ azureAuthIssue }),
   setAzureAuthBusy: (azureAuthBusy) => set({ azureAuthBusy }),
@@ -83,6 +89,12 @@ export const useAppStore = create<AppState>((set) => ({
   setAvailabilityRegionSearch: (availabilityRegionSearch) => set({ availabilityRegionSearch }),
   setWorkload: (workload) => set({ workload }),
   setComparisonRegions: (comparisonRegions) => set({ comparisonRegions: [...new Set(comparisonRegions)].slice(0, 3) }),
-  setSubscriptionId: (subscriptionId) => set({ subscriptionId, comparisonRegions: [] }),
+  setSubscriptionId: (subscriptionId) => set({ subscriptionId, comparisonRegions: [], shortlistKeys: [] }),
   setSeries: (series) => set({ series }),
+  applyScenario: (settings) => set({
+    series: settings.series,
+    regionSearch: settings.regionSearch,
+    comparisonRegions: [...settings.comparisonRegions],
+    workload: { ...settings.workload },
+  }),
 }));

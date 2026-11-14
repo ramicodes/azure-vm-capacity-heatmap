@@ -6,6 +6,11 @@ export type ArmRead =
   | { kind: "skus"; subscriptionId: string }
   | { kind: "quota"; subscriptionId: string; region: string };
 
+export interface ArmReadMetadata {
+  fetchedAt: Date;
+  cached: boolean;
+}
+
 export class ArmReadError extends Error {
   readonly code: string;
   constructor(code: string, message: string) { super(message); this.code = code; }

@@ -1,0 +1,153 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "appName": { "type": "string" },
+    "location": { "type": "string", "defaultValue": "eastus2" },
+    "tenantId": { "type": "string" },
+    "clientId": { "type": "string" },
+    "allowedUserIds": { "type": "array", "minLength": 1 },
+    "repository": { "type": "string" },
+    "branch": { "type": "string", "defaultValue": "main" }
+  },
+  "variables": {
+    "planName": "[concat(parameters('appName'), '-plan')]",
+    "authName": "[concat(parameters('appName'), '-auth')]",
+    "deployName": "[concat(parameters('appName'), '-deploy')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('authName')]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('deployName')]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials",
+      "apiVersion": "2023-01-31",
+      "name": "[concat(variables('deployName'), '/github-main')]",
+      "dependsOn": ["[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployName'))]"],
+      "properties": {
+        "issuer": "https://token.actions.githubusercontent.com",
+        "subject": "[concat('repo:', parameters('repository'), ':ref:refs/heads/', parameters('branch'))]",
+        "audiences": ["api://AzureADTokenExchange"]
+      }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('planName')]",
+      "location": "[parameters('location')]",
+      "kind": "linux",
+      "sku": { "name": "B1", "tier": "Basic", "capacity": 1 },
+      "properties": { "reserved": true }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-12-01",
+      "name": "[parameters('appName')]",
+      "location": "[parameters('location')]",
+      "kind": "app,linux",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('authName'))]"
+      ],
+      "identity": {
+        "type": "SystemAssigned, UserAssigned",
+        "userAssignedIdentities": {
+          "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('authName'))]": {}
+        }
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
+        "httpsOnly": true,
+        "clientAffinityEnabled": false,
+        "siteConfig": {
+          "linuxFxVersion": "NODE|22-lts",
+          "appCommandLine": "node --experimental-strip-types server/app.mjs",
+          "alwaysOn": true,
+          "minTlsVersion": "1.2",
+          "scmMinTlsVersion": "1.2",
+          "ftpsState": "Disabled",
+          "healthCheckPath": "/healthz",
+          "appSettings": [
+            { "name": "PLANNER_SUBSCRIPTION_ID", "value": "[subscription().subscriptionId]" },
+            { "name": "PLANNER_TENANT_ID", "value": "[parameters('tenantId')]" },
+            { "name": "PLANNER_ALLOWED_USER_IDS", "value": "[join(parameters('allowedUserIds'), ',')]" },
+            { "name": "OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID", "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('authName')), '2023-01-31').clientId]" },
+            { "name": "WEBSITE_AUTH_AAD_ALLOWED_TENANTS", "value": "[parameters('tenantId')]" },
+            { "name": "NODE_OPTIONS", "value": "--max-old-space-size=1024" },
+            { "name": "SCM_DO_BUILD_DURING_DEPLOYMENT", "value": "false" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites/config",
+      "apiVersion": "2023-12-01",
+      "name": "[concat(parameters('appName'), '/slotConfigNames')]",
+      "dependsOn": ["[resourceId('Microsoft.Web/sites', parameters('appName'))]"],
+      "properties": { "appSettingNames": ["OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID", "PLANNER_ALLOWED_USER_IDS"] }
+    },
+    {
+      "type": "Microsoft.Web/sites/config",
+      "apiVersion": "2023-12-01",
+      "name": "[concat(parameters('appName'), '/authsettingsV2')]",
+      "dependsOn": ["[resourceId('Microsoft.Web/sites', parameters('appName'))]"],
+      "properties": {
+        "platform": { "enabled": true, "runtimeVersion": "~1" },
+        "globalValidation": {
+          "requireAuthentication": true,
+          "unauthenticatedClientAction": "RedirectToLoginPage",
+          "redirectToProvider": "azureActiveDirectory",
+          "excludedPaths": ["/healthz"]
+        },
+        "httpSettings": { "requireHttps": true },
+        "login": { "tokenStore": { "enabled": false } },
+        "identityProviders": {
+          "azureActiveDirectory": {
+            "enabled": true,
+            "registration": {
+              "clientId": "[parameters('clientId')]",
+              "openIdIssuer": "[concat('https://login.microsoftonline.com/', parameters('tenantId'), '/v2.0')]",
+              "clientSecretSettingName": "OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID"
+            },
+            "login": { "loginParameters": ["scope=openid profile email"] },
+            "validation": {
+              "allowedAudiences": ["[parameters('clientId')]"],
+              "defaultAuthorizationPolicy": { "allowedPrincipals": { "identities": "[parameters('allowedUserIds')]" } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites/basicPublishingCredentialsPolicies",
+      "apiVersion": "2023-12-01",
+      "name": "[concat(parameters('appName'), '/scm')]",
+      "dependsOn": ["[resourceId('Microsoft.Web/sites', parameters('appName'))]"],
+      "properties": { "allow": false }
+    },
+    {
+      "type": "Microsoft.Web/sites/basicPublishingCredentialsPolicies",
+      "apiVersion": "2023-12-01",
+      "name": "[concat(parameters('appName'), '/ftp')]",
+      "dependsOn": ["[resourceId('Microsoft.Web/sites', parameters('appName'))]"],
+      "properties": { "allow": false }
+    }
+  ],
+  "outputs": {
+    "appId": { "type": "string", "value": "[resourceId('Microsoft.Web/sites', parameters('appName'))]" },
+    "hostname": { "type": "string", "value": "[reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01').defaultHostName]" },
+    "runtimePrincipalId": { "type": "string", "value": "[reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01', 'Full').identity.principalId]" },
+    "authPrincipalId": { "type": "string", "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('authName')), '2023-01-31').principalId]" },
+    "deployPrincipalId": { "type": "string", "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployName')), '2023-01-31').principalId]" },
+    "deployClientId": { "type": "string", "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployName')), '2023-01-31').clientId]" }
+  }
+}

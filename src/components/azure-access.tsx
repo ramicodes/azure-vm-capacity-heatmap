@@ -7,6 +7,7 @@ import { ErrorState, LoadingState } from "@/components/states";
 import { PageSection } from "@/components/page-section";
 import { azureEnvironment, useAzureSession } from "@/lib/azure-session";
 import { CliAccess } from "@/components/cli-access";
+import { HostedAccess } from "@/components/hosted-access";
 
 let popupCompletion: Promise<void> | undefined;
 
@@ -29,6 +30,7 @@ export function AzurePopupCallback() {
 
 export function AzureAccess({ children }: { children: ReactNode }) {
   const session = useAzureSession();
+  if (azureEnvironment.mode === "hosted") return <HostedAccess>{children}</HostedAccess>;
   if (azureEnvironment.mode === "cli") return <CliAccess>{children}</CliAccess>;
   if (azureEnvironment.mode === "managed") return <>{children}</>;
   if (!azureEnvironment.config) {

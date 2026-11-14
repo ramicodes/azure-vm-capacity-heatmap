@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   connectorErrorMessage,
@@ -100,19 +101,47 @@ export function ConnectorErrorState({
 export function LoadingState({
   rows = 3,
   className,
+  label = "Loading",
 }: {
   rows?: number;
   className?: string;
+  label?: string;
 }) {
   return (
     <div
       role="status"
-      aria-label="Loading"
+      aria-label={label}
       className={cn("space-y-3", className)}
     >
-      {Array.from({ length: rows }).map((_, i) => (
+      <p className="flex items-center gap-2 text-sm text-muted-foreground">
+        <LoaderCircle className="size-4 animate-spin text-primary motion-reduce:animate-none" aria-hidden="true" />
+        {label}
+      </p>
+      <div aria-hidden="true" className="space-y-3">{Array.from({ length: rows }).map((_, i) => (
         <Skeleton key={i} className="h-14 w-full rounded-lg" />
-      ))}
+      ))}</div>
+    </div>
+  );
+}
+
+export function ChartLoadingState({ label }: { label: string }) {
+  return (
+    <div className="min-w-0 rounded-lg border border-border bg-card p-5 sm:p-6">
+      <p role="status" aria-live="polite" className="flex items-center gap-2 text-sm font-medium">
+        <LoaderCircle className="size-4 animate-spin text-primary motion-reduce:animate-none" aria-hidden="true" />
+        {label}
+      </p>
+      <p className="mt-1 text-sm leading-6 text-muted-foreground">
+        Reading Azure offerings and preparing the regional analysis. Large VM catalogs can take a moment.
+      </p>
+      <div aria-hidden="true" className="mt-6 space-y-4">
+        {[72, 90, 58, 80, 46, 65].map((width, index) => (
+          <div key={index} className="flex items-center gap-4">
+            <Skeleton className="h-3 w-16 shrink-0 sm:w-24" />
+            <Skeleton className="h-6 rounded-sm" style={{ width: `${width}%` }} />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -1,0 +1,76 @@
+name: Deploy App Service
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: planner-app-service-production
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Test application and backend
+        run: node --experimental-strip-types --test tests/*.test.mjs
+      - name: Build hosted frontend and package dependency-free runtime
+        run: node scripts/package-app-service.mjs "$RUNNER_TEMP/planner-release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: planner-app-service
+          path: ${{ runner.temp }}/planner-release
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: planner-app-service
+          path: release
+      - name: Validate deployment configuration
+        env:
+          CLIENT: ${{ vars.AZURE_DEPLOY_CLIENT_ID }}
+          TENANT: ${{ vars.AZURE_TENANT_ID }}
+          SUBSCRIPTION: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          APP: ${{ vars.AZURE_WEBAPP_NAME }}
+          GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: test -n "$CLIENT" && test -n "$TENANT" && test -n "$SUBSCRIPTION" && test -n "$APP" && test -n "$GROUP"
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_DEPLOY_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          resource-group-name: ${{ vars.AZURE_RESOURCE_GROUP }}
+          package: release
+          clean: 'true'
+          restart: 'true'
+      - name: Verify health and anonymous API denial
+        env:
+          APP: ${{ vars.AZURE_WEBAPP_NAME }}
+          GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          HOST=$(az webapp show --name "$APP" --resource-group "$GROUP" --query defaultHostName -o tsv)
+          curl --fail --retry 12 --retry-delay 10 --retry-all-errors "https://$HOST/healthz" --output health.json
+          jq --exit-status '. == {"status":"ok"}' health.json
+          STATUS=$(curl --silent --output /dev/null --write-out '%{http_code}' "https://$HOST/api/arm?kind=subscriptions")
+          case "$STATUS" in 302|401|403) ;; *) echo "Anonymous API was not denied: $STATUS"; exit 1 ;; esac

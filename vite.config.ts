@@ -104,6 +104,8 @@ export default defineConfig(({ mode }) => {
   // with this base, so the runtime proxy route matches. Fall back to "./"
   // for non-session contexts (e.g., `bun run build` on a dev machine).
   const base = env.VITE_BASE || "./";
+  const proxyBase = base === "./" || base === "/" ? "" : base.replace(/\/+$/, "");
+  const retailPricesProxyPath = `${proxyBase}/api/retail-prices`;
   // Intentional: visible at dev-server startup so we can confirm which base Vite
   // is actually using when debugging proxy issues. Safe to leave in — only runs
   // once per `vite` invocation.
@@ -173,6 +175,13 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       strictPort: true,
+      proxy: {
+        [retailPricesProxyPath]: {
+          target: "https://prices.azure.com",
+          changeOrigin: true,
+          rewrite: (requestPath) => requestPath.replace(retailPricesProxyPath, "/api/retail/prices"),
+        },
+      },
       // When the orchestrator relocates the dep cache OFF the project root
       // (`AETHER_VITE_CACHE_DIR`, the FUSE atomic-rename fix), Vite serves the
       // prebundled deps via `/@fs/<abs>` URLs. `server.fs.strict` defaults to

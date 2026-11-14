@@ -265,6 +265,61 @@ test("disconnect and expiration prevent cached session reuse", async (t) => {
   assert.equal((await f.request("/status", { headers: { "X-Dashboard-Session": second.data.session } })).status, 401);
 });
 
+test("active checks renew the idle expiration without making sessions permanent", async (t) => {
+  let time = 0;
+  const f = await fixture(t, { now: () => time });
+  const { data } = await f.connect();
+  const headers = { "X-Dashboard-Session": data.session };
+  time = 29 * 60_000;
+  assert.equal((await f.request("/status", { headers })).status, 200);
+  time = 58 * 60_000;
+  assert.equal((await f.request("/read?kind=subscriptions", { headers })).status, 200);
+  time = 89 * 60_000;
+  assert.equal((await f.request("/status", { headers })).status, 401);
+});
+
+test("transient CLI context failures do not destroy a connected session", async (t) => {
+  let unavailable = false;
+  const f = await fixture(t, { runCli: async (args, signal) => {
+    signal?.throwIfAborted();
+    if (args[1] === "show") {
+      if (unavailable) throw new CliBridgeError("cli-timeout", "temporary timeout", 504);
+      return profile;
+    }
+    return { accessToken: cliToken, tenant, subscription };
+  } });
+  const { data } = await f.connect();
+  const headers = { "X-Dashboard-Session": data.session };
+  unavailable = true;
+  const temporary = await f.request("/status", { headers });
+  assert.equal(temporary.status, 504);
+  assert.equal((await temporary.json()).code, "cli-timeout");
+  unavailable = false;
+  assert.equal((await f.request("/status", { headers })).status, 200);
+});
+
+test("paginated ARM reads check the CLI context once per read, not once per page", async (t) => {
+  const links = [
+    "https://management.azure.com/subscriptions?api-version=2022-12-01&$skiptoken=page-2",
+    "https://management.azure.com/subscriptions?api-version=2022-12-01&$skiptoken=page-3",
+  ];
+  let pages = 0;
+  const f = await fixture(t, { fetcher: async (url) => {
+    pages++;
+    const token = new URL(url).searchParams.get("$skiptoken");
+    const page = token === "page-2" ? 1 : token === "page-3" ? 2 : 0;
+    return Response.json({ value: [], ...(links[page] ? { nextLink: links[page] } : {}) });
+  } });
+  const { data } = await f.connect();
+  f.calls.length = 0;
+  const response = await f.request("/read?kind=subscriptions", {
+    headers: { "X-Dashboard-Session": data.session },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(pages, 3);
+  assert.equal(f.calls.filter((args) => args[1] === "show").length, 2);
+});
+
 test("foreign/unknown pagination and raw ARM errors never return partial results or tokens", async (t) => {
   for (const nextLink of ["https://evil.test/subscriptions?api-version=2022-12-01", "/subscriptions?api-version=2022-12-01&url=evil"]) {
     const f = await fixture(t, { fetcher: async () => Response.json({ value: [{ subscriptionId: subscription }], nextLink }) });
@@ -288,6 +343,69 @@ test("projection preserves workload/quota inputs but removes unrelated nested pr
   const sku = { name: "Standard_D4", resourceType: "virtualMachines", capabilities: [{ name: "vCPUsAvailable", value: "2", token: cliToken }], restrictions: [{ type: "Zone", restrictionInfo: { locations: ["eastus"], zones: ["2"], token: cliToken } }] };
   assert.ok(!JSON.stringify(dashboardItems("skus", [sku])).includes(cliToken));
   assert.equal(dashboardItems("skus", [sku])[0].capabilities[0].value, "2");
+  assert.deepEqual(dashboardItems("skus", [
+    { resourceType: "disks", name: "unrelated" },
+    { ...sku, capabilities: [...sku.capabilities, { name: "unneeded", value: "discard" }] },
+  ]), dashboardItems("skus", [sku]));
+});
+
+test("reconnected sessions reuse the catalog but explicit rereads fetch Azure again", async (t) => {
+  let time = 10;
+  const entries = new Map();
+  let fetches = 0;
+  const sku = { name: "Standard_D4", resourceType: "virtualMachines", capabilities: [{ name: "vCPUs", value: "4" }] };
+  const cache = { read: async (key) => entries.get(key), write: async (key, entry) => { entries.set(key, entry); } };
+  const options = { now: () => time, skuCache: cache, fetcher: async () => {
+    fetches++;
+    return Response.json({ value: [sku] });
+  } };
+  const f = await fixture(t, options);
+  const route = `/read?kind=skus&subscriptionId=${subscription}`;
+  const read = async (fixture, session) => (await fixture.request(route, { headers: { "X-Dashboard-Session": session } })).json();
+  const first = await f.connect();
+  assert.deepEqual(await read(f, first.data.session), { value: [sku], fetchedAt: 10, cached: false });
+  time = 20;
+  const second = await f.connect();
+  assert.deepEqual(await read(f, second.data.session), { value: [sku], fetchedAt: 10, cached: true });
+  assert.equal(fetches, 1);
+  assert.deepEqual(await read(f, second.data.session), { value: [sku], fetchedAt: 20, cached: false });
+  assert.equal(fetches, 2);
+  const restarted = await fixture(t, options);
+  const third = await restarted.connect();
+  assert.deepEqual(await read(restarted, third.data.session), { value: [sku], fetchedAt: 20, cached: true });
+  assert.equal(fetches, 2);
+  restarted.setActive({ ...profile, user: { ...profile.user, name: "different-user" } });
+  const fourth = await restarted.connect();
+  assert.equal((await read(restarted, fourth.data.session)).cached, false);
+  assert.equal(fetches, 3);
+});
+
+test("cached catalog reads still reject a CLI context change before publishing", async (t) => {
+  let checks = 0;
+  const f = await fixture(t, {
+    skuCache: { read: async () => ({ value: [], fetchedAt: 1 }) },
+    runCli: async () => ++checks === 3 ? { ...profile, tenantId: subscription } : profile,
+  });
+  const { data } = await f.connect();
+  const response = await f.request(`/read?kind=skus&subscriptionId=${subscription}`, { headers: { "X-Dashboard-Session": data.session } });
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, "context-changed");
+  assert.equal(f.fetchCalls.length, 0);
+});
+
+test("disk cache failures are explicit without revoking the connected session", async (t) => {
+  const f = await fixture(t, {
+    skuCache: {
+      read: async () => null,
+      write: async () => { throw new CliBridgeError("catalog-cache", "Local catalog cache could not be saved.", 502); },
+    },
+  });
+  const { data } = await f.connect();
+  const headers = { "X-Dashboard-Session": data.session };
+  const response = await f.request(`/read?kind=skus&subscriptionId=${subscription}`, { headers });
+  assert.equal(response.status, 502);
+  assert.equal((await response.json()).code, "catalog-cache");
+  assert.equal((await f.request("/status", { headers })).status, 200);
 });
 
 test("cancelling an in-flight CLI context check does not revoke the session used by a replacement read", async (t) => {
@@ -333,17 +451,22 @@ test("mismatched token metadata is rejected before ARM and revokes the local ses
   assert.equal((await f.request("/status", { headers })).status, 401);
 });
 
-test("account change between pages prevents publishing partial data and preserves the precise error", async (t) => {
-  let accountChecks = 0;
+test("account change during a paginated read prevents publishing partial data", async (t) => {
+  let changed = false;
   const f = await fixture(t, {
-    runCli: async (args) => {
-      if (args[1] === "show") {
-        accountChecks++;
-        return accountChecks >= 4 ? { ...profile, tenantId: subscription } : profile;
+    runCli: async (args) => args[1] === "show"
+      ? changed ? { ...profile, tenantId: subscription } : profile
+      : { accessToken: cliToken, tenant, subscription },
+    fetcher: async (url) => {
+      if (!new URL(url).searchParams.has("$skiptoken")) {
+        changed = true;
+        return Response.json({
+          value: [{ subscriptionId: subscription }],
+          nextLink: "https://management.azure.com/subscriptions?api-version=2022-12-01&$skiptoken=next",
+        });
       }
-      return { accessToken: cliToken, tenant, subscription };
+      return Response.json({ value: [{ subscriptionId: subscription }] });
     },
-    fetcher: async () => Response.json({ value: [{ subscriptionId: subscription }], nextLink: "/subscriptions?api-version=2022-12-01&$skiptoken=next" }),
   });
   const { data } = await f.connect();
   const response = await f.request("/read?kind=subscriptions", { headers: { "X-Dashboard-Session": data.session } });

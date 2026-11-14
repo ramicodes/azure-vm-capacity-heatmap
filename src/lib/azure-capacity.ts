@@ -6,6 +6,8 @@ import { useAppStore } from "@/lib/store";
 import { readArmList } from "./arm-client";
 import { useArmReadContext, type ArmReadContext } from "./azure-session";
 import { selectedSubscription } from "./subscription-scope";
+import { DASHBOARD_QUERY_CACHE } from "./query-client";
+import type { ArmReadMetadata } from "./arm-http";
 
 export interface SubscriptionOption {
   id: string;
@@ -48,6 +50,7 @@ export interface CapacityData {
   offers: VmOffer[];
   families: Map<string, FamilyInfo>;
   fetchedAt: Date;
+  cached: boolean;
 }
 
 // ---------- adapters (narrow the broad ARM types at one boundary) ----------
@@ -108,7 +111,8 @@ async function fetchRegions(subscriptionId: string, context: ArmReadContext, sig
 }
 
 async function fetchCapacity(subscriptionId: string, context: ArmReadContext, signal: AbortSignal): Promise<CapacityData> {
-  const data = await readArmList({ kind: "skus", subscriptionId }, context, signal);
+  let metadata: ArmReadMetadata | undefined;
+  const data = await readArmList({ kind: "skus", subscriptionId }, context, signal, (result) => { metadata = result; });
 
   const offers: VmOffer[] = [];
   const familySizes = new Map<string, { series: string; templates: Map<string, number> }>();
@@ -200,7 +204,7 @@ async function fetchCapacity(subscriptionId: string, context: ArmReadContext, si
     families.set(id, { id, label, series: f.series });
   }
 
-  return { offers, families, fetchedAt: new Date() };
+  return { offers, families, fetchedAt: metadata?.fetchedAt ?? new Date(), cached: metadata?.cached ?? false };
 }
 
 // ---------- hooks ----------
@@ -209,7 +213,9 @@ export function useSubscriptions(context: ArmReadContext) {
   return useQuery({
     queryKey: ["arm", context.cacheKey, "subscriptions"],
     queryFn: ({ signal }) => fetchSubscriptions(context, signal),
-    enabled: context.enabled, staleTime: 10 * 60_000, retry: false,
+    ...DASHBOARD_QUERY_CACHE,
+    enabled: context.enabled,
+    retry: false,
   });
 }
 
@@ -217,8 +223,10 @@ export function useRegions(subscriptionId: string | undefined, context: ArmReadC
   return useQuery({
     queryKey: ["arm", context.cacheKey, "regions", subscriptionId],
     queryFn: ({ signal }) => fetchRegions(subscriptionId!, context, signal),
+    ...DASHBOARD_QUERY_CACHE,
     enabled: context.enabled && !!subscriptionId,
     staleTime: 60 * 60_000,
+    gcTime: 60 * 60_000,
     retry: false,
   });
 }
@@ -227,8 +235,13 @@ export function useCapacity(subscriptionId: string | undefined, context: ArmRead
   return useQuery({
     queryKey: ["arm", context.cacheKey, "skus", subscriptionId],
     queryFn: ({ signal }) => fetchCapacity(subscriptionId!, context, signal),
+    ...DASHBOARD_QUERY_CACHE,
+    staleTime: (query) => {
+      const data = query.state.data;
+      const ageAtRead = data ? Math.max(0, query.state.dataUpdatedAt - data.fetchedAt.getTime()) : 0;
+      return Math.max(0, DASHBOARD_QUERY_CACHE.staleTime - ageAtRead);
+    },
     enabled: context.enabled && !!subscriptionId,
-    staleTime: 5 * 60_000,
     retry: false,
   });
 }
@@ -241,7 +254,7 @@ export interface SeriesStat {
   gpu: boolean;
 }
 
-export function useCapacityScope(view: CapacityView) {
+export function useCapacityScope(view: CapacityView, options: { includeQuota?: boolean } = {}) {
   const context = useArmReadContext();
   const regionSearch = useAppStore((s) => s.regionSearch);
   const setRegionSearch = useAppStore((s) => s.setRegionSearch);
@@ -289,7 +302,7 @@ export function useCapacityScope(view: CapacityView) {
       { availabilityRegionSearch, regionSearch, workload }),
     [capacity.data, series, regions.data, view, availabilityRegionSearch, regionSearch, workload],
   );
-  const activeComparisonRegions = view === "workload" ? comparisonRegions : [];
+  const activeComparisonRegions = view === "workload" && options.includeQuota !== false ? comparisonRegions : [];
   const quotaQueries = useQueries({
     queries: activeComparisonRegions.map((region) => ({
       queryKey: ["arm", context.cacheKey, "quota", subId, region],
@@ -297,12 +310,12 @@ export function useCapacityScope(view: CapacityView) {
         const data = await readArmList({ kind: "quota", subscriptionId: subId!, region }, context, signal);
         return parseQuota({ value: data });
       },
+      ...DASHBOARD_QUERY_CACHE,
       enabled: context.enabled && !!subId,
       staleTime: 5 * 60_000,
+      gcTime: 60 * 60_000,
       retry: false,
       retryOnMount: false,
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
     })),
   });
   const quotas = new Map<string, QuotaSnapshot>(activeComparisonRegions.map((region, i) => {
@@ -326,7 +339,8 @@ export function useCapacityScope(view: CapacityView) {
     setSeries,
     seriesStats,
     error: subs.error ?? regions.error ?? capacity.error,
-    loading: subs.isPending || (!!subId && capacity.isPending),
+    loading: subs.isPending || (!!subId && (capacity.isPending || regions.isPending)),
+    refreshing: subs.isFetching || regions.isFetching || capacity.isFetching || quotaQueries.some((query) => query.isFetching),
     refetchAll: () => {
       if (!context.enabled) return;
       void subs.refetch();

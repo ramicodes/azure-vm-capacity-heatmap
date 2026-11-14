@@ -68,6 +68,54 @@ export interface QuotaSnapshot {
   data?: RegionQuota;
 }
 
+export interface QuotaScanOutcome {
+  state: "ready" | "error";
+  data?: RegionQuota;
+  error?: unknown;
+}
+
+export const MAX_QUOTA_COVERAGE_REGIONS = 50;
+export const QUOTA_SCAN_CONCURRENCY = 3;
+
+export interface DeploymentReadinessRow {
+  region: string;
+  matchingSkuCount: number;
+  eligibleSkuCount: number;
+  readySkuCount: number;
+  readiness: "ready" | "blocked" | "unknown" | "not-checked";
+  reason: string;
+  checkedAt?: Date;
+}
+
+export async function runBoundedQuotaScan(
+  regions: readonly string[],
+  fetchQuota: (region: string, signal: AbortSignal) => Promise<RegionQuota>,
+  onResult: (region: string, result: QuotaScanOutcome) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  if (regions.length > MAX_QUOTA_COVERAGE_REGIONS) {
+    throw new RangeError(`Quota coverage is limited to ${MAX_QUOTA_COVERAGE_REGIONS} regions per scan.`);
+  }
+  let next = 0;
+  async function worker() {
+    while (!signal.aborted) {
+      const index = next++;
+      if (index >= regions.length) return;
+      const region = regions[index];
+      try {
+        const data = await fetchQuota(region, signal);
+        if (!signal.aborted) onResult(region, { state: "ready", data });
+      } catch (error) {
+        if (!signal.aborted) onResult(region, { state: "error", error });
+      }
+    }
+  }
+  await Promise.all(Array.from(
+    { length: Math.min(QUOTA_SCAN_CONCURRENCY, regions.length) },
+    () => worker(),
+  ));
+}
+
 function quotaNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -118,6 +166,77 @@ export function assessQuota(offer: VmOffer, count: number, snapshot?: QuotaSnaps
 export function quotaSummary(offer: VmOffer, count: number, snapshot?: QuotaSnapshot): string {
   const q = assessQuota(offer, count, snapshot);
   return `Quota ${q.status}; additional vCPUs ${q.required ?? "unknown"}; regional headroom ${q.regionalHeadroom ?? "unknown"}; family headroom ${q.familyHeadroom ?? "unknown"}`;
+}
+
+export function deploymentReadiness(
+  offers: readonly VmOffer[],
+  matchingOffers: readonly VmOffer[],
+  count: number,
+  quotas: ReadonlyMap<string, QuotaSnapshot>,
+): DeploymentReadinessRow[] {
+  const regions = [...new Set(offers.map((offer) => offer.region))];
+  return regions.map((region) => {
+    const matching = matchingOffers.filter((offer) => offer.region === region);
+    const eligible = matching.filter((offer) => offer.status !== "restricted");
+    const row = {
+      region,
+      matchingSkuCount: matching.length,
+      eligibleSkuCount: eligible.length,
+      readySkuCount: 0,
+      readiness: "not-checked" as DeploymentReadinessRow["readiness"],
+      reason: "Quota has not been checked for this region.",
+    };
+    if (matching.length === 0) {
+      return {
+        ...row,
+        readiness: "blocked",
+        reason: "No SKUs meet the applied capability and zone requirements.",
+      };
+    }
+    if (eligible.length === 0) {
+      return {
+        ...row,
+        readiness: "blocked",
+        reason: "All matching SKUs are restricted for this subscription.",
+      };
+    }
+    const snapshot = quotas.get(region);
+    if (!snapshot || snapshot.state === "not-requested") return row;
+    if (snapshot.state !== "ready") {
+      return {
+        ...row,
+        readiness: "unknown",
+        reason: snapshot.state === "error"
+          ? "Quota could not be read; sufficiency is unknown."
+          : "Quota is still loading; readiness is not final.",
+      };
+    }
+    const assessments = eligible.map((offer) => assessQuota(offer, count, snapshot));
+    const readySkuCount = assessments.filter((assessment) => assessment.status === "sufficient").length;
+    if (readySkuCount > 0) {
+      return {
+        ...row,
+        readiness: "ready",
+        readySkuCount,
+        reason: `${readySkuCount} matching SKU${readySkuCount === 1 ? "" : "s"} has sufficient regional and family vCPU headroom.`,
+        checkedAt: snapshot.data?.fetchedAt,
+      };
+    }
+    if (assessments.every((assessment) => assessment.status === "insufficient")) {
+      return {
+        ...row,
+        readiness: "blocked",
+        reason: "No eligible matching SKU has enough regional and family vCPU headroom for the requested VM count.",
+        checkedAt: snapshot.data?.fetchedAt,
+      };
+    }
+    return {
+      ...row,
+      readiness: "unknown",
+      reason: "Quota metrics are incomplete for eligible SKUs; no passing SKU is confirmed.",
+      checkedAt: snapshot.data?.fetchedAt,
+    };
+  });
 }
 
 export function csvCell(value: string | number | null | undefined): string {

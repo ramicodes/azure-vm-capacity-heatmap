@@ -2,9 +2,9 @@ import { useMemo, useState } from "react";
 import { Cpu, Lock, ServerOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { OfferSummaryChart } from "@/components/offer-summary-chart";
-import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { ConnectorErrorState, EmptyState } from "@/components/states";
+import { ChartLoadingState, ConnectorErrorState, EmptyState } from "@/components/states";
+import { PageHeader } from "@/components/page-header";
 import { RefreshControl, ScopeControls } from "@/components/scope-controls";
 import { cn } from "@/lib/utils";
 import {
@@ -18,11 +18,11 @@ import {
 // ---------- encodings ----------
 
 const HEAT = [
-  { min: 1, max: 1, cls: "bg-emerald-100 text-emerald-950" },
-  { min: 2, max: 3, cls: "bg-emerald-200 text-emerald-950" },
-  { min: 4, max: 5, cls: "bg-emerald-400 text-emerald-950" },
-  { min: 6, max: 8, cls: "bg-emerald-700 text-white" },
-  { min: 9, max: Infinity, cls: "bg-emerald-900 text-white" },
+  { min: 1, max: 1, cls: "bg-[#ebf3fc] text-[#0c3b5e]" },
+  { min: 2, max: 3, cls: "bg-[#cfe4fa] text-[#0c3b5e]" },
+  { min: 4, max: 5, cls: "bg-[#96c6fa] text-[#0c3b5e]" },
+  { min: 6, max: 8, cls: "bg-[#0f6cbd] text-white" },
+  { min: 9, max: Infinity, cls: "bg-[#0c3b5e] text-white" },
 ] as const;
 
 function heatClass(v: number) {
@@ -138,12 +138,9 @@ export function HomePage() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="space-y-1 px-4 pt-4 sm:px-6">
-        <h1 className="text-lg font-semibold tracking-tight">VM availability</h1>
-        <p className="text-sm text-muted-foreground">Explore offered sizes and subscription restrictions. Workload requirements and quota checks live in Workload fit and do not filter this view.</p>
-      </div>
+      <PageHeader title="VM availability" description="Explore offered sizes and subscription restrictions. Workload requirements and quota checks live in Workload fit and do not filter this view." />
       {/* toolbar */}
-      <div className="flex flex-wrap items-end gap-x-4 gap-y-3 border-b border-border px-4 py-3 sm:px-6">
+      <div className="planner-toolbar flex flex-wrap items-end gap-x-4 gap-y-3 border-b border-border px-4 py-4 sm:px-6">
         <ScopeControls scope={scope} onChange={() => setSelection(null)} />
 
         <div className="flex flex-col gap-1">
@@ -178,11 +175,11 @@ export function HomePage() {
       ) : subs.data && subs.data.length === 0 ? (
         <EmptyState icon={ServerOff} title="No Azure subscriptions found for this account" />
       ) : loading ? (
-        <HeatmapSkeleton />
+        <div className="px-4 py-5 sm:px-6"><ChartLoadingState label="Generating VM availability charts..." /></div>
       ) : (
         <>
         <div className="min-w-0 px-4 pt-4 sm:px-6"><OfferSummaryChart scope={scope} /></div>
-        <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        <div className="flex min-h-0 flex-1 flex-col 2xl:flex-row">
           <section
             id="heatmap"
             tabIndex={-1}
@@ -458,7 +455,7 @@ function DetailPane({
   return (
     <aside
       aria-labelledby="detail-title"
-      className="flex w-full shrink-0 flex-col border-t border-border bg-card lg:w-[26rem] lg:border-l lg:border-t-0"
+      className="flex w-full shrink-0 flex-col border-t border-border bg-card 2xl:w-[25rem] 2xl:border-l 2xl:border-t-0"
     >
       <div className="border-b border-border px-4 py-3">
         <h2 id="detail-title" className="text-base font-semibold">
@@ -539,25 +536,5 @@ function DetailPane({
         </table>
       </div>
     </aside>
-  );
-}
-
-function HeatmapSkeleton() {
-  return (
-    <div role="status" aria-label="Loading VM availability" className="flex flex-col gap-3 px-4 py-4 sm:px-6">
-      <Skeleton className="h-6 w-72" />
-      <Skeleton className="h-4 w-96" />
-      <div className="mt-2 flex flex-col gap-1">
-        {Array.from({ length: 10 }).map((_, r) => (
-          <div key={r} className="flex gap-1">
-            <Skeleton className="h-8 w-44" />
-            <Skeleton className="h-8 w-36" />
-            {Array.from({ length: 12 }).map((_, c) => (
-              <Skeleton key={c} className="h-8 w-10" />
-            ))}
-          </div>
-        ))}
-      </div>
-    </div>
   );
 }

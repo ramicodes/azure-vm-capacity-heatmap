@@ -1,12 +1,14 @@
-import { armEndpoint, managedArmItems, ArmReadError, fetchArmList, type ArmRead } from "./arm-http";
+import { armEndpoint, managedArmItems, ArmReadError, fetchArmList, type ArmRead, type ArmReadMetadata } from "./arm-http";
 import { azureAccessToken, type ArmReadContext } from "./azure-session";
 import { readCliArm } from "./cli-session";
+import { readHostedArm } from "./hosted-session";
 
-export async function readArmList(request: ArmRead, context: ArmReadContext, signal?: AbortSignal): Promise<unknown[]> {
+export async function readArmList(request: ArmRead, context: ArmReadContext, signal?: AbortSignal, onMetadata?: (metadata: ArmReadMetadata) => void): Promise<unknown[]> {
   if (!context.enabled) throw new ArmReadError("authentication", "Sign in to Azure before loading subscription data.");
+  if (context.mode === "hosted") return readHostedArm(request, signal, onMetadata, context.cacheKey);
   if (context.mode === "cli") {
     if (!context.identity) throw new ArmReadError("session", "Connect the local Azure CLI session first.");
-    return readCliArm(request, context.identity, signal);
+    return readCliArm(request, context.identity, signal, onMetadata);
   }
   if (context.mode === "standalone") {
     const identity = context.identity;

@@ -14,7 +14,7 @@ const request = { kind: "subscriptions" };
 const pageUrl = (page) => `${ARM_ORIGIN}/subscriptions?api-version=2022-12-01&page=${page}`;
 
 test("standalone and CLI direct routes use the origin root without a matching build mount", () => {
-  for (const mode of ["standalone", "cli"]) {
+  for (const mode of ["standalone", "cli", "hosted"]) {
     for (const base of ["./", "/", ""]) {
       for (const route of ["/", "/charts", "/missing"]) {
         assert.equal(getRouterBasename(base, route, mode), "/");
@@ -24,7 +24,7 @@ test("standalone and CLI direct routes use the origin root without a matching bu
 });
 
 test("matching preview mounts retain their exact basename in every mode", () => {
-  for (const mode of ["managed", "standalone", "cli"]) {
+  for (const mode of ["managed", "standalone", "cli", "hosted"]) {
     for (const route of ["/v1/dev/session", "/v1/dev/session/", "/v1/dev/session/charts"]) {
       assert.equal(getRouterBasename("/v1/dev/session/", route, mode), "/v1/dev/session");
     }

@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArmReadError, type ArmRead } from "./arm-http";
+import { ArmReadError, type ArmRead, type ArmReadMetadata } from "./arm-http";
+import { sessionErrorInvalidates } from "./cli-session-policy";
 import { queryClient } from "./query-client";
 import { useAppStore } from "./store";
 import { subscriptionScope } from "./subscription-scope";
@@ -7,6 +8,7 @@ import { subscriptionScope } from "./subscription-scope";
 const bridgeOrigin = "http://127.0.0.1:5174";
 let csrf: string | null = null;
 const publicErrors: Record<string, string> = {
+  "catalog-cache": "The local catalog cache could not be read or saved. Check the bridge terminal; clear its cache or disable ARM_SKU_CACHE and restart.",
   "cli-missing": "Azure CLI was not found. Install the official CLI and restart the local bridge.",
   "cli-login": "Azure CLI needs an authorized login or policy approval. Review it in your terminal; the dashboard never runs az login.",
   "cli-timeout": "Azure CLI timed out. Check its current login and try again.",
@@ -24,6 +26,10 @@ const publicErrors: Record<string, string> = {
   "subscription-scope": "This local bridge is restricted to its configured subscription. No other subscription was used.",
   "subscription-unavailable": "The configured subscription could not be read. Verify the exact subscription ID, CLI profile and Azure RBAC access. No other subscription was used.",
 };
+
+export function isInvalidCliSessionError(error: unknown): error is ArmReadError {
+  return error instanceof ArmReadError && sessionErrorInvalidates(error.code);
+}
 
 async function applySubscriptionScope(metadata: object) {
   if (!("subscriptionScope" in metadata)) throw new ArmReadError("cli-shape", "The bridge did not return its subscription scope. Restart it and reconnect.");
@@ -67,7 +73,7 @@ async function bridgeRequest(route: string, method: "GET" | "POST", session: str
   if (!response.ok) {
     const code = data && typeof data === "object" && "code" in data && typeof data.code === "string" ? data.code : "bridge";
     const message = publicErrors[code] ?? "The local CLI bridge could not complete this read. Check its terminal and try again.";
-    if (session && ["cli-login", "cli-context", "cli-failed", "cli-missing", "cli-timeout", "context-changed", "session", "cli-token", "http-401", "subscription-scope", "subscription-unavailable"].includes(code)) {
+    if (session && isInvalidCliSessionError(new ArmReadError(code, message))) {
       await clearCliData(message, session);
     }
     throw new ArmReadError(code, message);
@@ -76,7 +82,7 @@ async function bridgeRequest(route: string, method: "GET" | "POST", session: str
   return data;
 }
 
-export async function readCliArm(request: ArmRead, session: string, signal?: AbortSignal): Promise<unknown[]> {
+export async function readCliArm(request: ArmRead, session: string, signal?: AbortSignal, onMetadata?: (metadata: ArmReadMetadata) => void): Promise<unknown[]> {
   const scope = useAppStore.getState().azureSubscriptionScope;
   if (scope && request.kind !== "subscriptions" && request.subscriptionId.toLowerCase() !== scope) {
     throw new ArmReadError("subscription-scope", publicErrors["subscription-scope"]);
@@ -92,6 +98,13 @@ export async function readCliArm(request: ArmRead, session: string, signal?: Abo
         item.subscriptionId.toLowerCase() !== scope) throw new ArmReadError("subscription-scope", publicErrors["subscription-scope"]);
   }
   if (useAppStore.getState().azureIdentity !== session) throw new ArmReadError("session", "The CLI connection changed. Discarded its previous read.");
+  if (request.kind === "skus") {
+    if (!("fetchedAt" in result) || typeof result.fetchedAt !== "number" || !Number.isFinite(result.fetchedAt) ||
+        !Number.isFinite(new Date(result.fetchedAt).getTime()) || !("cached" in result) || typeof result.cached !== "boolean") {
+      throw new ArmReadError("cli-shape", "The CLI bridge returned invalid catalog provenance. Restart the bridge and reconnect.");
+    }
+    onMetadata?.({ fetchedAt: new Date(result.fetchedAt), cached: result.cached });
+  }
   return result.value;
 }
 
@@ -112,15 +125,15 @@ export function useCliSession() {
         csrf = result.csrf;
         return true;
       } catch (error) {
-        if (identity && !signal.aborted && !(error instanceof ArmReadError && error.code === "busy")) {
+        if (identity && !signal.aborted && isInvalidCliSessionError(error)) {
           await clearCliData(error instanceof ArmReadError ? error.message : "The CLI connection could not be verified. Connect again.", identity);
         }
         throw error;
       }
     },
-    retry: false, staleTime: 0, gcTime: 0,
-    refetchInterval: identity ? 15_000 : false, refetchIntervalInBackground: true,
-    refetchOnWindowFocus: "always", refetchOnReconnect: "always",
+    retry: false, staleTime: 60_000, gcTime: 0,
+    refetchInterval: identity ? 60_000 : false, refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true, refetchOnReconnect: true,
   });
   const connect = useMutation({
     mutationFn: async () => {
@@ -156,7 +169,7 @@ export function useCliSession() {
       const previous = store.azureIdentity;
       await clearCliData();
       try { await bridgeRequest("/disconnect", "POST", previous); } catch (error) {
-        store.setAzureAuthIssue("Dashboard data was cleared, but the bridge could not confirm disconnect. Its local session expires after 30 minutes or on bridge restart.");
+        store.setAzureAuthIssue("Dashboard data was cleared, but the bridge could not confirm disconnect. Its local session expires after 30 minutes of inactivity or on bridge restart.");
         throw error;
       } finally { store.setAzureAuthBusy(false); }
     },

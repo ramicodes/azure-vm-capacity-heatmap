@@ -1,12 +1,16 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { createServer } from "node:http";
 import path from "node:path";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
 import { ArmReadError, fetchArmList, fetchArmSubscription } from "../src/lib/arm-http.ts";
 import { subscriptionScope } from "../src/lib/subscription-scope.ts";
+import { createSkuCache, skuCacheKey } from "./cli-sku-cache.mjs";
+import { dashboardItems } from "./dashboard-items.mjs";
+export { dashboardItems } from "./dashboard-items.mjs";
 
 export const CLI_HOST = "127.0.0.1:5174";
 export const DASHBOARD_ORIGIN = "http://127.0.0.1:5173";
@@ -14,32 +18,6 @@ const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const csrfHeader = "x-dashboard-csrf";
 const sessionHeader = "x-dashboard-session";
 const sessionLifetime = 30 * 60_000;
-
-const text = "text";
-const number = "number";
-const projections = {
-  subscriptions: { subscriptionId: text, displayName: text, state: text },
-  regions: { name: text, displayName: text, metadata: { geographyGroup: text } },
-  skus: {
-    name: text, size: text, family: text, resourceType: text, locations: [text],
-    capabilities: [{ name: text, value: text }],
-    locationInfo: [{ location: text, zones: [text] }],
-    restrictions: [{ type: text, reasonCode: text, values: [text], restrictionInfo: { locations: [text], zones: [text] } }],
-  },
-  quota: { name: { value: text, localizedValue: text }, unit: text, currentValue: number, limit: number },
-};
-
-function project(value, schema) {
-  if (schema === text) return typeof value === "string" ? value : undefined;
-  if (schema === number) return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-  if (Array.isArray(schema)) return Array.isArray(value) ? value.map((item) => project(item, schema[0])).filter((item) => item !== undefined) : undefined;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  return Object.fromEntries(Object.entries(schema).map(([key, child]) => [key, project(value[key], child)]).filter(([, child]) => child !== undefined));
-}
-
-export function dashboardItems(kind, items) {
-  return items.map((item) => project(item, projections[kind])).filter((item) => item !== undefined);
-}
 
 export class CliBridgeError extends ArmReadError {
   constructor(code, message, status = 400) {
@@ -129,7 +107,7 @@ function matches(left, right) {
     timingSafeEqual(Buffer.from(left), Buffer.from(right));
 }
 
-export function createCliBridge({ runCli, fetcher = fetch, now = Date.now, host = CLI_HOST, deadlineMs = 120_000, subscriptionId } = {}) {
+export function createCliBridge({ runCli, fetcher = fetch, now = Date.now, host = CLI_HOST, deadlineMs = 120_000, subscriptionId, skuCache } = {}) {
   const scope = subscriptionScope(subscriptionId);
   const csrf = randomBytes(32).toString("hex");
   const salt = randomBytes(32).toString("hex");
@@ -182,13 +160,16 @@ export function createCliBridge({ runCli, fetcher = fetch, now = Date.now, host 
     }
     let active;
     try { active = await context(signal); } catch (error) {
-      if (!signal.aborted) sessions.delete(id);
+      if (!signal.aborted && error instanceof CliBridgeError && ["cli-login", "cli-context"].includes(error.code)) {
+        sessions.delete(id);
+      }
       throw error;
     }
     if (fingerprint(active) !== saved.fingerprint) {
       sessions.delete(id);
       throw new CliBridgeError("context-changed", "Azure CLI account, tenant or default subscription changed. Dashboard data was discarded; connect again.", 409);
     }
+    saved.expires = now() + sessionLifetime;
     return active;
   };
   const server = createServer(async (req, res) => {
@@ -240,7 +221,7 @@ export function createCliBridge({ runCli, fetcher = fetch, now = Date.now, host 
           sessions.delete(req.headers[sessionHeader]);
           if (sessions.size >= 8) throw new CliBridgeError("sessions", "Too many local sessions. Disconnect unused dashboards or restart the bridge.", 429);
           const id = randomBytes(32).toString("hex");
-          sessions.set(id, { fingerprint: fingerprint(active), expires: now() + sessionLifetime });
+          sessions.set(id, { fingerprint: fingerprint(active), expires: now() + sessionLifetime, catalogReads: new Set() });
           send(200, { session: id, tenant: active.tenant, subscriptionScope: scope,
             ...(!scope ? { defaultSubscription: active.subscription } : {}) });
           return;
@@ -259,6 +240,18 @@ export function createCliBridge({ runCli, fetcher = fetch, now = Date.now, host 
       }
       const id = req.headers[sessionHeader];
       const active = await checkSession(id, signal);
+      const saved = sessions.get(id);
+      if (!saved) throw new CliBridgeError("session", "The local CLI session disconnected. Connect again.", 401);
+      const catalogKey = request.kind === "skus" && skuCache ? skuCacheKey(active, request.subscriptionId) : null;
+      if (catalogKey && !saved.catalogReads.has(catalogKey)) {
+        const cached = await skuCache.read(catalogKey, signal);
+        if (cached) {
+          await checkSession(id, signal);
+          saved.catalogReads.add(catalogKey);
+          send(200, { value: dashboardItems("skus", cached.value), fetchedAt: cached.fetchedAt, cached: true });
+          return;
+        }
+      }
       const token = await runCli(["account", "get-access-token", "--resource", "https://management.azure.com/",
         "--subscription", active.subscription], signal);
       if (typeof token?.accessToken !== "string" || !token.accessToken ||
@@ -274,7 +267,6 @@ export function createCliBridge({ runCli, fetcher = fetch, now = Date.now, host 
             keys.some((key) => !["api-version", "$skiptoken", "$skipToken", "skiptoken", "skipToken"].includes(key))) {
           throw new CliBridgeError("pagination", "ARM pagination contained unsupported parameters. No partial results were returned.", 502);
         }
-        await checkSession(id, signal);
         return fetcher(...args);
       };
       let items;
@@ -289,12 +281,19 @@ export function createCliBridge({ runCli, fetcher = fetch, now = Date.now, host 
         throw error;
       }
       await checkSession(id, signal);
-      send(200, { value: dashboardItems(request.kind, items) });
+      const value = dashboardItems(request.kind, items);
+      const fetchedAt = now();
+      if (catalogKey) {
+        await skuCache.write(catalogKey, { value, fetchedAt }, signal);
+        await checkSession(id, signal);
+        saved.catalogReads.add(catalogKey);
+      }
+      send(200, { value, ...(request.kind === "skus" ? { fetchedAt, cached: false } : {}) });
     } catch (error) {
       const known = error instanceof CliBridgeError || error instanceof ArmReadError;
       const safe = timedOut ? new CliBridgeError("read-timeout", "The local ARM read exceeded its two-minute deadline. Retry the read; no partial results were returned.", 504)
         : known ? error : new CliBridgeError("bridge", "The local CLI bridge could not complete this read. No partial results were returned.", 502);
-      if (["cli-login", "cli-context", "cli-failed", "cli-missing", "cli-timeout", "http-401"].includes(safe.code)) sessions.delete(req.headers[sessionHeader]);
+      if (["cli-login", "cli-context", "http-401"].includes(safe.code)) sessions.delete(req.headers[sessionHeader]);
       send(safe.status ?? (safe.code.startsWith("http-") ? Number(safe.code.slice(5)) : 502),
         { code: safe.code, message: safe.message });
     } finally { if (admitted) release(); clearTimeout(timeout); }
@@ -308,16 +307,23 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   // Resolve only the installed official CLI; never accept an executable or command from a request.
   let invocation;
   let scope;
+  let skuCache;
   try {
     if (existsSync(".env.local")) loadEnvFile(".env.local");
     scope = subscriptionScope(process.env.ARM_SUBSCRIPTION_ID);
+    if (process.env.ARM_SKU_CACHE && !["true", "false"].includes(process.env.ARM_SKU_CACHE)) {
+      throw new ArmReadError("cache-config", "ARM_SKU_CACHE must be true or false.");
+    }
+    if (process.env.ARM_SKU_CACHE === "true") {
+      skuCache = createSkuCache(path.join(process.env.LOCALAPPDATA || path.join(homedir(), ".cache"), "AzureVmCapacityPlanner", "Cache"));
+    }
     invocation = cliInvocation();
   } catch (error) {
     console.error(error instanceof ArmReadError ? error.message : "Azure CLI configuration could not be loaded.");
     process.exitCode = 1;
   }
   if (invocation) {
-    const server = createCliBridge({ runCli: createCliRunner(invocation), subscriptionId: scope });
+    const server = createCliBridge({ runCli: createCliRunner(invocation), subscriptionId: scope, skuCache });
     server.on("error", () => { console.error("The CLI bridge could not bind 127.0.0.1:5174. Check whether it is already running."); process.exitCode = 1; });
     server.listen(5174, "127.0.0.1", () => console.log(`Read-only CLI bridge: http://${CLI_HOST}; allowed dashboard: ${DASHBOARD_ORIGIN}`));
   }

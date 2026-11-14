@@ -20,9 +20,10 @@ export function CliAccess({ children }: { children: ReactNode }) {
         <p>Uses the CLI's existing authorized public-cloud user context. It is not a consent bypass.
           Tenant policy and Azure RBAC still apply. The dashboard never runs az login or changes CLI context.</p>
         <p>Tokens stay in the loopback server. Only dashboard GET reads are allowed.
-          Context is checked on every read and every 15 seconds while connected; changes clear dashboard data.</p>
+          Context is checked on every read and about once a minute while connected; confirmed changes clear dashboard data.</p>
         <p>To change accounts or directories, use your own terminal, then reconnect here.
-          Disconnect clears dashboard data without signing Azure CLI out. Local sessions expire after 30 minutes.</p>
+          Disconnect clears browser data without signing Azure CLI out. Active sessions renew; 30 minutes of inactivity or a bridge restart expires them.
+          An enabled local catalog cache survives reconnects for up to 15 minutes. Refresh bypasses it after the first catalog read in a session.</p>
       </PopoverContent>
     </Popover>
   );

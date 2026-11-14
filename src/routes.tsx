@@ -1,7 +1,10 @@
 import type { ReactElement } from "react";
-import { BarChart3, Grid3x3, type LucideIcon } from "lucide-react";
+import { Navigate } from "react-router-dom";
+import { BarChart3, Grid3x3, ListChecks, type LucideIcon } from "lucide-react";
 import { HomePage } from "@/pages/home";
 import { ChartsPage } from "@/pages/charts";
+import { CostPage } from "@/pages/cost";
+import { ShortlistPage } from "@/pages/shortlist";
 
 export interface AppRoute {
   /** "/" is the index route; others are paths under the shell. */
@@ -21,4 +24,7 @@ export interface AppRoute {
 export const routes: AppRoute[] = [
   { path: "/", element: <HomePage />, label: "VM availability", icon: Grid3x3 },
   { path: "/charts", element: <ChartsPage />, label: "Workload fit", icon: BarChart3 },
+  { path: "/cost", element: <CostPage />, label: "Cost estimates", icon: BarChart3 },
+  { path: "/shortlist", element: <ShortlistPage />, label: "Deployment shortlist", icon: ListChecks },
+  { path: "/scenarios", element: <Navigate to="/shortlist" replace /> },
 ];

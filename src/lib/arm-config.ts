@@ -9,14 +9,14 @@ export interface AzureBrowserConfig {
 }
 
 export interface ArmEnvironment {
-  mode: "managed" | "standalone" | "cli";
+  mode: "managed" | "standalone" | "cli" | "hosted";
   config: AzureBrowserConfig | null;
   problems: string[];
 }
 
 export function armCacheKey(environment: ArmEnvironment, identity: string | null, generation = 0, subscriptionScope: string | null = null): string {
   return environment.mode === "managed" ? "managed"
-    : environment.mode === "cli" ? `cli:${identity ?? "disconnected"}:${generation}:${subscriptionScope ?? "all"}`
+    : environment.mode === "cli" || environment.mode === "hosted" ? `${environment.mode}:${identity ?? "disconnected"}:${generation}:${subscriptionScope ?? "all"}`
     : `standalone:${environment.config?.clientId ?? ""}:${environment.config?.tenant ?? ""}:${identity ?? "signed-out"}:${generation}`;
 }
 
@@ -29,13 +29,14 @@ export function armEnvironment(
   const local = ["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname);
   const mode = env.VITE_ARM_MODE?.trim() || (local ? "standalone" : "managed");
   if (mode === "managed") return { mode, config: null, problems: [] };
+  if (mode === "hosted") return { mode, config: null, problems: [] };
   if (mode === "cli") {
     return development && currentOrigin === "http://127.0.0.1:5173"
       ? { mode, config: null, problems: [] }
       : { mode: "standalone", config: null, problems: ["CLI mode requires the development preview at http://127.0.0.1:5173."] };
   }
   if (mode !== "standalone") {
-    return { mode: "standalone", config: null, problems: ["VITE_ARM_MODE must be managed, standalone or cli."] };
+    return { mode: "standalone", config: null, problems: ["VITE_ARM_MODE must be managed, standalone, cli or hosted."] };
   }
   const problems: string[] = [];
   const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
